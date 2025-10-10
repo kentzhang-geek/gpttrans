@@ -40,37 +40,39 @@ fn process_windows_messages_nonblocking(_hotkey_tx: &std::sync::mpsc::Sender<()>
 
 #[cfg(windows)]
 mod win_hotkey {
+    use std::thread;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging as wm;
     use windows::Win32::UI::Input::KeyboardAndMouse as km;
 
     pub const HOTKEY_ID: i32 = 1;
 
-    pub fn register_on_current_thread() -> bool {
-        unsafe {
-            // Ensure message queue exists for this thread
-            let mut dummy = wm::MSG::default();
-            let _ = wm::PeekMessageW(&mut dummy, HWND(std::ptr::null_mut()), 0, 0, wm::PM_NOREMOVE);
-
+    pub fn spawn_hotkey_listener(tx: std::sync::mpsc::Sender<()>) {
+        thread::spawn(move || unsafe {
             let modifiers = km::HOT_KEY_MODIFIERS(km::MOD_ALT.0 as u32);
-            if km::RegisterHotKey(HWND(std::ptr::null_mut()), HOTKEY_ID, modifiers, km::VK_F3.0 as u32).is_ok() {
-                crate::logger::log("RegisterHotKey Alt+F3 OK (main thread)");
-                true
+            if km::RegisterHotKey(HWND(std::ptr::null_mut()), HOTKEY_ID, modifiers, km::VK_F3.0 as u32).is_err() {
+                crate::logger::log("RegisterHotKey Alt+F3 FAILED (worker thread)");
+                crate::toast("GPTTrans", "Failed to register Alt+F3 hotkey (in use?)");
             } else {
-                crate::logger::log("RegisterHotKey Alt+F3 FAILED (main thread)");
-                false
+                crate::logger::log("RegisterHotKey Alt+F3 OK (worker thread)");
             }
-        }
-    }
-
-    pub fn drain_hotkey_messages(tx: &std::sync::mpsc::Sender<()>) {
-        unsafe {
-            let mut msg = wm::MSG::default();
-            while wm::PeekMessageW(&mut msg, HWND(std::ptr::null_mut()), wm::WM_HOTKEY, wm::WM_HOTKEY, wm::PM_REMOVE).into() {
-                crate::logger::log("WM_HOTKEY received (Alt+F3) [main]");
-                let _ = tx.send(());
+            loop {
+                let mut msg = wm::MSG::default();
+                let got = wm::GetMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, 0);
+                if got.0 == -1 {
+                    crate::logger::log("GetMessageW returned -1, breaking hotkey loop");
+                    break;
+                }
+                if msg.message == wm::WM_HOTKEY {
+                    crate::logger::log("WM_HOTKEY received (Alt+F3)");
+                    let _ = tx.send(());
+                }
+                let _ = wm::TranslateMessage(&msg);
+                wm::DispatchMessageW(&msg);
             }
-        }
+            let _ = km::UnregisterHotKey(HWND(std::ptr::null_mut()), HOTKEY_ID);
+            crate::logger::log("UnregisterHotKey Alt+F3");
+        });
     }
 }
 
@@ -258,6 +260,28 @@ fn toast(title: &str, body: &str) {
     }
 }
 
+#[cfg(windows)]
+pub(crate) fn show_message_box(title: &str, text: &str) {
+    use std::os::windows::ffi::OsStrExt;
+    use std::ffi::OsStr;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging as wm;
+    fn wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    }
+    unsafe {
+        let _ = wm::MessageBoxW(
+            HWND(std::ptr::null_mut()),
+            windows::core::PCWSTR(wide(text).as_ptr()),
+            windows::core::PCWSTR(wide(title).as_ptr()),
+            wm::MB_OK | wm::MB_TOPMOST | wm::MB_SETFOREGROUND,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn show_message_box(_title: &str, _text: &str) {}
+
 fn main() {
     // Init logger first
     logger::init();
@@ -266,23 +290,31 @@ fn main() {
     let (hotkey_tx, hotkey_rx) = mpsc::channel::<()>();
     let (tray_tx, tray_rx) = mpsc::channel::<tray::TrayAction>();
 
-    // Register hotkey on main thread so our message pump sees it
-    if !win_hotkey::register_on_current_thread() {
-        toast("GPTTrans", "Failed to register Alt+F3 hotkey (in use?)");
+    // Hotkey listener on worker thread
+    logger::log("Spawning hotkey listener thread");
+    win_hotkey::spawn_hotkey_listener(hotkey_tx.clone());
+
+    // Tray icon and pump on dedicated thread (keep non-Send types on one thread)
+    {
+        let tray_tx2 = tray_tx.clone();
+        thread::spawn(move || {
+            match tray::TrayHandle::new(tray_tx2) {
+                Ok(tray) => {
+                    logger::log("Tray created");
+                    loop {
+                        tray.pump();
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                }
+                Err(e) => {
+                    toast("GPTTrans", &format!("Tray failed: {}", e));
+                    logger::log(&format!("Tray failed: {}", e));
+                }
+            }
+        });
     }
 
-    // Tray icon
-    let tray: Option<tray::TrayHandle> = match tray::TrayHandle::new(tray_tx.clone()) {
-        Ok(t) => Some(t),
-        Err(e) => {
-            toast("GPTTrans", &format!("Tray failed: {}", e));
-            logger::log(&format!("Tray failed: {}", e));
-            None
-        }
-    };
-
-    // Background runtime for API calls
-    let rt = tokio::runtime::Runtime::new().expect("tokio rt");
+    // (tray pump handled in dedicated thread above)
 
     // Config: load from config.json (next to exe). Env vars still override if present.
     let mut cfg = config::Config::load();
@@ -298,76 +330,79 @@ fn main() {
         toast("GPTTrans", "Ready. Press Alt+F3 to translate clipboard.");
     }
 
-    // Main pump loop
-    loop {
-        // Ensure the main thread processes Windows messages; capture WM_HOTKEY explicitly
-        process_windows_messages_nonblocking(&hotkey_tx);
-        // Pump tray events (non-blocking)
-        // If tray creation failed earlier, this is a no-op via shadowing
-        if let Some(ref tray) = tray {
-            tray.pump();
-        }
-
-        // WM_HOTKEY already drained above
-
-        // Non-blocking check for events
-        let mut did_something = false;
-
-        if let Ok(act) = tray_rx.try_recv() {
-            match act {
-                tray::TrayAction::Quit => { logger::log("Quit action received"); break },
-                tray::TrayAction::OpenSettings => {
-                    logger::log("OpenSettings action received");
-                    ui::spawn_settings_window(cfg.clone());
-                }
-            }
-        }
-
-        if let Ok(()) = hotkey_rx.try_recv() {
-            did_something = true;
-            let (api_key, model, target_lang) = {
-                let c = cfg.lock().unwrap().clone();
-                (c.openai_api_key, c.openai_model, c.target_lang)
-            };
-            if api_key.is_empty() {
-                toast("GPTTrans", "Missing OPENAI_API_KEY.");
-                logger::log("Hotkey: Missing OPENAI_API_KEY");
-            } else if let Some(text) = read_clipboard_string() {
-                if text.trim().is_empty() {
-                    toast("GPTTrans", "Clipboard is empty.");
-                    logger::log("Hotkey: Clipboard empty");
-                } else {
-                    toast("GPTTrans", "Translating...");
-                    logger::log(&format!("Translating {} chars with model {} to {}", text.len(), model, target_lang));
-                    let res = rt.block_on(async move { translate_via_openai(&text, &target_lang, &api_key, &model).await });
-                    match res {
-                        Ok(out) => {
-                            let ok = write_clipboard_string(&out);
-                            if ok {
-                                toast("GPTTrans", "Translation copied to clipboard.");
-                                logger::log("Translation success; copied to clipboard");
-                            } else {
-                                toast("GPTTrans", "Translated. Failed to write clipboard.");
-                                logger::log("Translation success; failed to write clipboard");
-                            }
-                            // Show/update egui output window (scrollable)
-                            ui::show_output_text(out);
-                        }
-                        Err(e) => {
-                            toast("GPTTrans", &format!("Error: {}", e));
-                            logger::log(&format!("Translation error: {}", e));
-                        }
+    // Background: tray actions
+    {
+        let cfg = Arc::clone(&cfg);
+        thread::spawn(move || {
+            while let Ok(act) = tray_rx.recv() {
+                match act {
+                    tray::TrayAction::Quit => {
+                        logger::log("Quit action received");
+                        std::process::exit(0);
+                    }
+                    tray::TrayAction::OpenSettings => {
+                        logger::log("OpenSettings action received");
+                        ui::spawn_settings_window(cfg.clone());
                     }
                 }
-            } else {
-                toast("GPTTrans", "Failed to read clipboard.");
-                logger::log("Hotkey: Failed to read clipboard");
             }
-        }
-
-        if !did_something {
-            // Sleep briefly to avoid busy loop; tray menu uses its own events
-            thread::sleep(Duration::from_millis(25));
-        }
+        });
     }
+
+    // Background: hotkey translation worker
+    {
+        let cfg = Arc::clone(&cfg);
+        thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("tokio rt");
+            while let Ok(()) = hotkey_rx.recv() {
+                let (api_key, model, target_lang) = {
+                    let c = cfg.lock().unwrap().clone();
+                    (c.openai_api_key, c.openai_model, c.target_lang)
+                };
+                if api_key.is_empty() {
+                    toast("GPTTrans", "Missing OPENAI_API_KEY.");
+                    logger::log("Hotkey: Missing OPENAI_API_KEY");
+                } else if let Some(text) = read_clipboard_string() {
+                    if text.trim().is_empty() {
+                        toast("GPTTrans", "Clipboard is empty.");
+                        logger::log("Hotkey: Clipboard empty");
+                    } else {
+                        toast("GPTTrans", "Translating...");
+                        logger::log(&format!("Translating {} chars with model {} to {}", text.len(), model, target_lang));
+                        let res = rt.block_on(async move { translate_via_openai(&text, &target_lang, &api_key, &model).await });
+                        match res {
+                            Ok(out) => {
+                                let ok = write_clipboard_string(&out);
+                                if ok {
+                                    toast("GPTTrans", "Translation copied to clipboard.");
+                                    logger::log("Translation success; copied to clipboard");
+                                } else {
+                                    toast("GPTTrans", "Translated. Failed to write clipboard.");
+                                    logger::log("Translation success; failed to write clipboard");
+                                }
+                                ui::show_output_text(out.clone());
+                                // Fallback: if UI hasn't updated, show a native message box with the translation
+                                thread::spawn(move || {
+                                    thread::sleep(Duration::from_millis(900));
+                                    if !ui::has_ever_updated() {
+                                        show_message_box("GPTTrans - Translation", &out);
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                toast("GPTTrans", &format!("Error: {}", e));
+                                logger::log(&format!("Translation error: {}", e));
+                            }
+                        }
+                    }
+                } else {
+                    toast("GPTTrans", "Failed to read clipboard.");
+                    logger::log("Hotkey: Failed to read clipboard");
+                }
+            }
+        });
+    }
+
+    // Run UI on main thread (blocks)
+    ui::run_ui_main_thread();
 }
