@@ -7,39 +7,70 @@ use std::time::Duration;
 
 mod config;
 mod ui;
+mod logger;
+
+// Pump Windows messages on the thread that owns the tray icon, while preserving WM_HOTKEY for explicit handling
+#[cfg(windows)]
+fn process_windows_messages_nonblocking(hotkey_tx: &std::sync::mpsc::Sender<()>) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging as wm;
+    unsafe {
+        // First, drain any WM_HOTKEY and forward to our channel
+        let mut hot = wm::MSG::default();
+        while wm::PeekMessageW(&mut hot, HWND(std::ptr::null_mut()), wm::WM_HOTKEY, wm::WM_HOTKEY, wm::PM_REMOVE).into() {
+            let _ = hotkey_tx.send(());
+        }
+
+        // Then process all other messages (two ranges to skip WM_HOTKEY)
+        let mut msg = wm::MSG::default();
+        while wm::PeekMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, wm::WM_HOTKEY - 1, wm::PM_REMOVE).into() {
+            let _ = wm::TranslateMessage(&msg);
+            wm::DispatchMessageW(&msg);
+        }
+        let mut msg2 = wm::MSG::default();
+        while wm::PeekMessageW(&mut msg2, HWND(std::ptr::null_mut()), wm::WM_HOTKEY + 1, u32::MAX, wm::PM_REMOVE).into() {
+            let _ = wm::TranslateMessage(&msg2);
+            wm::DispatchMessageW(&msg2);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn process_windows_messages_nonblocking(_hotkey_tx: &std::sync::mpsc::Sender<()>) {}
 
 #[cfg(windows)]
 mod win_hotkey {
-    use std::thread;
-
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging as wm;
     use windows::Win32::UI::Input::KeyboardAndMouse as km;
 
     pub const HOTKEY_ID: i32 = 1;
 
-    pub fn spawn_hotkey_listener(tx: std::sync::mpsc::Sender<()>) {
-        thread::spawn(move || unsafe {
-            // Register on this thread so WM_HOTKEY messages are posted here
+    pub fn register_on_current_thread() -> bool {
+        unsafe {
+            // Ensure message queue exists for this thread
+            let mut dummy = wm::MSG::default();
+            let _ = wm::PeekMessageW(&mut dummy, HWND(std::ptr::null_mut()), 0, 0, wm::PM_NOREMOVE);
+
             let modifiers = km::HOT_KEY_MODIFIERS(km::MOD_ALT.0 as u32);
-            if km::RegisterHotKey(HWND(std::ptr::null_mut()), HOTKEY_ID, modifiers, km::VK_F3.0 as u32).is_err() {
-                // best effort notification
-                crate::toast("GPTTrans", "Failed to register Alt+F3 hotkey (in use?)");
+            if km::RegisterHotKey(HWND(std::ptr::null_mut()), HOTKEY_ID, modifiers, km::VK_F3.0 as u32).is_ok() {
+                crate::logger::log("RegisterHotKey Alt+F3 OK (main thread)");
+                true
+            } else {
+                crate::logger::log("RegisterHotKey Alt+F3 FAILED (main thread)");
+                false
             }
-            loop {
-                let mut msg = wm::MSG::default();
-                let got = wm::GetMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, 0);
-                if got.0 == -1 {
-                    break;
-                }
-                if msg.message == wm::WM_HOTKEY {
-                    let _ = tx.send(());
-                }
-                wm::TranslateMessage(&msg);
-                wm::DispatchMessageW(&msg);
+        }
+    }
+
+    pub fn drain_hotkey_messages(tx: &std::sync::mpsc::Sender<()>) {
+        unsafe {
+            let mut msg = wm::MSG::default();
+            while wm::PeekMessageW(&mut msg, HWND(std::ptr::null_mut()), wm::WM_HOTKEY, wm::WM_HOTKEY, wm::PM_REMOVE).into() {
+                crate::logger::log("WM_HOTKEY received (Alt+F3) [main]");
+                let _ = tx.send(());
             }
-            let _ = km::UnregisterHotKey(HWND(std::ptr::null_mut()), HOTKEY_ID);
-        });
+        }
     }
 }
 
@@ -54,7 +85,7 @@ mod tray {
     use std::sync::mpsc::Sender;
 
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
-    use tray_icon::menu::{Menu, MenuItem, MenuEvent};
+    use tray_icon::menu::{Menu, MenuItem, MenuEvent, PredefinedMenuItem};
     use crossbeam_channel::Receiver;
 
     pub struct TrayHandle {
@@ -75,9 +106,12 @@ mod tray {
     impl TrayHandle {
         pub fn new(action_tx: Sender<TrayAction>) -> anyhow::Result<Self> {
             let menu = Menu::new();
-            let settings = MenuItem::new("Settings…", true, None);
+            // Use plain ASCII labels to avoid any shell/encoding quirks
+            let settings = MenuItem::new("Settings...", true, None);
             let quit = MenuItem::new("Quit", true, None);
-            menu.append_items(&[&settings, &quit])?;
+            let sep = PredefinedMenuItem::separator();
+            // Add a separator to improve reliability of menu rendering on some shells
+            menu.append_items(&[&settings, &sep, &quit])?;
 
             // tiny 16x16 teal dot icon
             let (icon_w, icon_h) = (16, 16);
@@ -109,8 +143,10 @@ mod tray {
             while let Ok(event) = self.menu_event_rx.try_recv() {
                 let id = event.id;
                 if id == self.quit_item.id() {
+                    crate::logger::log("Tray: Quit clicked");
                     let _ = self.action_tx.send(TrayAction::Quit);
                 } else if id == self.settings_item.id() {
+                    crate::logger::log("Tray: Settings clicked");
                     let _ = self.action_tx.send(TrayAction::OpenSettings);
                 }
             }
@@ -223,18 +259,24 @@ fn toast(title: &str, body: &str) {
 }
 
 fn main() {
+    // Init logger first
+    logger::init();
+    logger::log("App starting");
     // Channels
     let (hotkey_tx, hotkey_rx) = mpsc::channel::<()>();
     let (tray_tx, tray_rx) = mpsc::channel::<tray::TrayAction>();
 
-    // Hotkey listener thread (Windows)
-    win_hotkey::spawn_hotkey_listener(hotkey_tx);
+    // Register hotkey on main thread so our message pump sees it
+    if !win_hotkey::register_on_current_thread() {
+        toast("GPTTrans", "Failed to register Alt+F3 hotkey (in use?)");
+    }
 
     // Tray icon
     let tray: Option<tray::TrayHandle> = match tray::TrayHandle::new(tray_tx.clone()) {
         Ok(t) => Some(t),
         Err(e) => {
             toast("GPTTrans", &format!("Tray failed: {}", e));
+            logger::log(&format!("Tray failed: {}", e));
             None
         }
     };
@@ -244,6 +286,7 @@ fn main() {
 
     // Config: load from config.json (next to exe). Env vars still override if present.
     let mut cfg = config::Config::load();
+    logger::log("Config loaded from config.json");
     if let Ok(v) = std::env::var("OPENAI_API_KEY") { if !v.is_empty() { cfg.openai_api_key = v; } }
     if let Ok(v) = std::env::var("OPENAI_MODEL") { if !v.is_empty() { cfg.openai_model = v; } }
     if let Ok(v) = std::env::var("TARGET_LANG") { if !v.is_empty() { cfg.target_lang = v; } }
@@ -257,19 +300,24 @@ fn main() {
 
     // Main pump loop
     loop {
+        // Ensure the main thread processes Windows messages; capture WM_HOTKEY explicitly
+        process_windows_messages_nonblocking(&hotkey_tx);
         // Pump tray events (non-blocking)
         // If tray creation failed earlier, this is a no-op via shadowing
         if let Some(ref tray) = tray {
             tray.pump();
         }
 
+        // WM_HOTKEY already drained above
+
         // Non-blocking check for events
         let mut did_something = false;
 
         if let Ok(act) = tray_rx.try_recv() {
             match act {
-                tray::TrayAction::Quit => break,
+                tray::TrayAction::Quit => { logger::log("Quit action received"); break },
                 tray::TrayAction::OpenSettings => {
+                    logger::log("OpenSettings action received");
                     ui::spawn_settings_window(cfg.clone());
                 }
             }
@@ -283,30 +331,37 @@ fn main() {
             };
             if api_key.is_empty() {
                 toast("GPTTrans", "Missing OPENAI_API_KEY.");
+                logger::log("Hotkey: Missing OPENAI_API_KEY");
             } else if let Some(text) = read_clipboard_string() {
                 if text.trim().is_empty() {
                     toast("GPTTrans", "Clipboard is empty.");
+                    logger::log("Hotkey: Clipboard empty");
                 } else {
-                    toast("GPTTrans", "Translating…");
+                    toast("GPTTrans", "Translating...");
+                    logger::log(&format!("Translating {} chars with model {} to {}", text.len(), model, target_lang));
                     let res = rt.block_on(async move { translate_via_openai(&text, &target_lang, &api_key, &model).await });
                     match res {
                         Ok(out) => {
                             let ok = write_clipboard_string(&out);
                             if ok {
                                 toast("GPTTrans", "Translation copied to clipboard.");
+                                logger::log("Translation success; copied to clipboard");
                             } else {
                                 toast("GPTTrans", "Translated. Failed to write clipboard.");
+                                logger::log("Translation success; failed to write clipboard");
                             }
                             // Show egui output window (scrollable)
                             ui::spawn_output_window(out);
                         }
                         Err(e) => {
                             toast("GPTTrans", &format!("Error: {}", e));
+                            logger::log(&format!("Translation error: {}", e));
                         }
                     }
                 }
             } else {
                 toast("GPTTrans", "Failed to read clipboard.");
+                logger::log("Hotkey: Failed to read clipboard");
             }
         }
 

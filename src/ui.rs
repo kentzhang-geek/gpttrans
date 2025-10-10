@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::logger;
 use crate::write_clipboard_string;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
@@ -6,34 +7,48 @@ use std::thread;
 
 pub fn spawn_output_window(text: String) {
     thread::spawn(move || {
-        let app = OutputApp { text };
+        logger::log("Output window: launching");
+        let app = OutputApp { text, first: true };
         let native_options = eframe::NativeOptions::default();
-        let _ = eframe::run_native(
-            "GPTTrans – Translation",
+        match eframe::run_native(
+            "GPTTrans - Translation",
             native_options,
             Box::new(|_cc| Box::new(app)),
-        );
+        ) {
+            Ok(_) => logger::log("Output window: closed"),
+            Err(e) => logger::log(&format!("Output window error: {}", e)),
+        }
     });
 }
 
 pub fn spawn_settings_window(cfg: Arc<Mutex<Config>>) {
     thread::spawn(move || {
-        let app = SettingsApp { cfg };
+        logger::log("Settings window: launching");
+        let app = SettingsApp { cfg, first: true };
         let native_options = eframe::NativeOptions::default();
-        let _ = eframe::run_native(
-            "GPTTrans – Settings",
+        match eframe::run_native(
+            "GPTTrans - Settings",
             native_options,
             Box::new(|_cc| Box::new(app)),
-        );
+        ) {
+            Ok(_) => logger::log("Settings window: closed"),
+            Err(e) => logger::log(&format!("Settings window error: {}", e)),
+        }
     });
 }
 
 struct OutputApp {
     text: String,
+    first: bool,
 }
 
 impl eframe::App for OutputApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.first {
+            self.first = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            logger::log("Output window: shown (focused)");
+        }
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Translation");
@@ -64,10 +79,16 @@ impl eframe::App for OutputApp {
 
 struct SettingsApp {
     cfg: Arc<Mutex<Config>>,
+    first: bool,
 }
 
 impl eframe::App for SettingsApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.first {
+            self.first = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            logger::log("Settings window: shown (focused)");
+        }
         let mut tmp = self.cfg.lock().unwrap().clone();
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -96,3 +117,4 @@ impl eframe::App for SettingsApp {
         });
     }
 }
+
