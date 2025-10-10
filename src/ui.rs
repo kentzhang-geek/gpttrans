@@ -10,6 +10,7 @@ use std::thread;
 use std::fs;
 
 static OUTPUT_SENDER: Lazy<Mutex<Option<mpsc::Sender<String>>>> = Lazy::new(|| Mutex::new(None));
+static LAST_TEXT: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 static HAS_UPDATED: AtomicBool = AtomicBool::new(false);
 static FONTS_SET: AtomicBool = AtomicBool::new(false);
 static WINDOW_VISIBLE: AtomicBool = AtomicBool::new(false);
@@ -52,9 +53,21 @@ pub fn show_output_text(text: String) {
             logger::log("UI: sent translation to output window");
         }
     }
+    if let Ok(mut lt) = LAST_TEXT.lock() { *lt = text.clone(); }
     // If the window is hidden (after user clicked Hide) and UI loop is alive, show a quick native box
     if HAS_UPDATED.load(Ordering::Relaxed) && !WINDOW_VISIBLE.load(Ordering::Relaxed) {
         crate::show_message_box("GPTTrans - Translation", &text);
+    }
+}
+
+pub fn show_window() {
+    ensure_output_thread();
+    let text = { LAST_TEXT.lock().unwrap().clone() };
+    if let Ok(guard) = OUTPUT_SENDER.lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(text);
+            logger::log("UI: requested show (resent last text)");
+        }
     }
 }
 

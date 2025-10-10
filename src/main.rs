@@ -372,10 +372,10 @@ fn main() {
                         logger::log("Quit action received");
                         std::process::exit(0);
                     }
-                    tray::TrayAction::OpenSettings => {
-                        logger::log("OpenSettings action received");
-                        ui::spawn_settings_window(cfg.clone());
-                    }
+                tray::TrayAction::OpenSettings => {
+                    logger::log("OpenSettings action received");
+                    ui::show_window();
+                }
                 }
             }
         });
