@@ -350,8 +350,8 @@ fn main() {
                                 toast("GPTTrans", "Translated. Failed to write clipboard.");
                                 logger::log("Translation success; failed to write clipboard");
                             }
-                            // Show egui output window (scrollable)
-                            ui::spawn_output_window(out);
+                            // Show/update egui output window (scrollable)
+                            ui::show_output_text(out);
                         }
                         Err(e) => {
                             toast("GPTTrans", &format!("Error: {}", e));

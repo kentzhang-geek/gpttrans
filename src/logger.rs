@@ -1,7 +1,7 @@
 use once_cell::sync::Lazy;
 use std::fs::{OpenOptions, File};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -43,4 +43,3 @@ pub fn log(msg: &str) {
         let _ = f.flush();
     }
 }
-

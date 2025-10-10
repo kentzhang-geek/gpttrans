@@ -2,53 +2,87 @@ use crate::config::Config;
 use crate::logger;
 use crate::write_clipboard_string;
 use eframe::egui;
-use std::sync::{Arc, Mutex};
+use once_cell::sync::Lazy;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 use std::thread;
 
-pub fn spawn_output_window(text: String) {
+static OUTPUT_SENDER: Lazy<Mutex<Option<mpsc::Sender<String>>>> = Lazy::new(|| Mutex::new(None));
+
+fn ensure_output_thread() {
+    let mut guard = OUTPUT_SENDER.lock().unwrap();
+    if guard.is_some() {
+        return;
+    }
+    let (tx, rx) = mpsc::channel::<String>();
+    *guard = Some(tx);
+
     thread::spawn(move || {
-        logger::log("Output window: launching");
-        let app = OutputApp { text, first: true };
-        let native_options = eframe::NativeOptions::default();
+        logger::log("Output UI thread: starting");
+        let app = OutputApp { text: String::new(), rx, need_focus: false, first: true, logged_init: false };
+        let native_options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_title("GPTTrans - Translation")
+                .with_inner_size([800.0, 560.0])
+                .with_always_on_top()
+                .with_visible(true),
+            ..Default::default()
+        };
         match eframe::run_native(
             "GPTTrans - Translation",
             native_options,
             Box::new(|_cc| Box::new(app)),
         ) {
-            Ok(_) => logger::log("Output window: closed"),
+            Ok(_) => logger::log("Output UI thread: stopped"),
             Err(e) => logger::log(&format!("Output window error: {}", e)),
         }
     });
 }
 
-pub fn spawn_settings_window(cfg: Arc<Mutex<Config>>) {
-    thread::spawn(move || {
-        logger::log("Settings window: launching");
-        let app = SettingsApp { cfg, first: true };
-        let native_options = eframe::NativeOptions::default();
-        match eframe::run_native(
-            "GPTTrans - Settings",
-            native_options,
-            Box::new(|_cc| Box::new(app)),
-        ) {
-            Ok(_) => logger::log("Settings window: closed"),
-            Err(e) => logger::log(&format!("Settings window error: {}", e)),
+pub fn show_output_text(text: String) {
+    ensure_output_thread();
+    if let Ok(mut guard) = OUTPUT_SENDER.lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(text);
+            logger::log("UI: sent translation to output window");
         }
-    });
+    }
+}
+
+pub fn spawn_settings_window(_cfg: Arc<Mutex<Config>>) {
+    // TODO: move Settings into the same UI thread to avoid winit EventLoop limitations
+    logger::log("Settings window currently disabled to avoid EventLoop conflicts");
 }
 
 struct OutputApp {
     text: String,
+    rx: mpsc::Receiver<String>,
+    need_focus: bool,
     first: bool,
+    logged_init: bool,
 }
 
 impl eframe::App for OutputApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.first {
+        // Wake up periodically so we can poll the channel even without user events
+        ctx.request_repaint_after(Duration::from_millis(120));
+        if !self.logged_init {
+            self.logged_init = true;
+            logger::log("Output window: update entered");
+        }
+        // Drain any pending texts; keep only the latest
+        while let Ok(new_text) = self.rx.try_recv() {
+            self.text = new_text;
+            self.need_focus = true;
+        }
+
+        if self.first || self.need_focus {
             self.first = false;
+            self.need_focus = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             logger::log("Output window: shown (focused)");
         }
+
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Translation");
@@ -76,45 +110,3 @@ impl eframe::App for OutputApp {
         });
     }
 }
-
-struct SettingsApp {
-    cfg: Arc<Mutex<Config>>,
-    first: bool,
-}
-
-impl eframe::App for SettingsApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.first {
-            self.first = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            logger::log("Settings window: shown (focused)");
-        }
-        let mut tmp = self.cfg.lock().unwrap().clone();
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("GPTTrans Settings");
-            ui.separator();
-            ui.label("OpenAI API Key");
-            ui.add(egui::TextEdit::singleline(&mut tmp.openai_api_key).password(true).hint_text("sk-..."));
-            ui.separator();
-            ui.label("Model");
-            ui.add(egui::TextEdit::singleline(&mut tmp.openai_model));
-            ui.label("Target Language");
-            ui.add(egui::TextEdit::singleline(&mut tmp.target_lang));
-
-            ui.separator();
-            if ui.button("Save").clicked() {
-                if let Ok(mut g) = self.cfg.lock() {
-                    *g = tmp.clone();
-                    let _ = g.save();
-                }
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            ui.add_space(8.0);
-            if ui.button("Cancel").clicked() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-        });
-    }
-}
-
