@@ -88,12 +88,14 @@ mod tray {
 
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
     use tray_icon::menu::{Menu, MenuItem, MenuEvent, PredefinedMenuItem};
+    use tray_icon as tri;
     use crossbeam_channel::Receiver;
 
     pub struct TrayHandle {
         #[allow(dead_code)]
         tray: TrayIcon,
         menu_event_rx: Receiver<MenuEvent>,
+        tray_event_rx: Receiver<tri::TrayIconEvent>,
         quit_item: MenuItem,
         settings_item: MenuItem,
         action_tx: Sender<TrayAction>,
@@ -136,8 +138,9 @@ mod tray {
                 .build()?;
 
             let menu_event_rx = MenuEvent::receiver().clone();
+            let tray_event_rx = tri::TrayIconEvent::receiver().clone();
 
-            Ok(Self { tray, menu_event_rx, quit_item: quit, settings_item: settings, action_tx })
+            Ok(Self { tray, menu_event_rx, tray_event_rx, quit_item: quit, settings_item: settings, action_tx })
         }
 
         pub fn pump(&self) {
@@ -150,6 +153,17 @@ mod tray {
                 } else if id == self.settings_item.id() {
                     crate::logger::log("Tray: Settings clicked");
                     let _ = self.action_tx.send(TrayAction::OpenSettings);
+                }
+            }
+            // Non-blocking tray icon click events: show settings on left-click as visible feedback
+            while let Ok(event) = self.tray_event_rx.try_recv() {
+                #[allow(unused_variables)]
+                let icon_id = event.id;
+                match event.click_type {
+                    tri::ClickType::Left | tri::ClickType::Double => {
+                        let _ = self.action_tx.send(TrayAction::OpenSettings);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -301,6 +315,24 @@ fn main() {
             match tray::TrayHandle::new(tray_tx2) {
                 Ok(tray) => {
                     logger::log("Tray created");
+                    // Windows message pump on the tray thread so clicks/menus work
+                    #[cfg(windows)]
+                    {
+                        use windows::Win32::Foundation::HWND;
+                        use windows::Win32::UI::WindowsAndMessaging as wm;
+                        loop {
+                            unsafe {
+                                let mut msg = wm::MSG::default();
+                                while wm::PeekMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, 0, wm::PM_REMOVE).into() {
+                                    let _ = wm::TranslateMessage(&msg);
+                                    wm::DispatchMessageW(&msg);
+                                }
+                            }
+                            tray.pump();
+                            thread::sleep(Duration::from_millis(25));
+                        }
+                    }
+                    #[cfg(not(windows))]
                     loop {
                         tray.pump();
                         thread::sleep(Duration::from_millis(25));
