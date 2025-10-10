@@ -1,0 +1,15 @@
+# Build output
+/target/
+
+# Editors / OS
+.vscode/
+.idea/
+*.iml
+.DS_Store
+
+# Local config & secrets
+config.json
+.env
+
+# Crash logs
+*.log
