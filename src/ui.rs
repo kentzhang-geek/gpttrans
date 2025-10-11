@@ -19,6 +19,8 @@ static CONFIG: Lazy<Mutex<Option<Arc<Mutex<Config>>>>> = Lazy::new(|| Mutex::new
 enum UiMessage {
     ShowText(String),
     OpenSettings,
+    AppendText(String),  // For streaming updates
+    SetTranslating(bool), // Show/hide loading indicator
 }
 
 fn ensure_output_thread() {
@@ -39,6 +41,7 @@ fn ensure_output_thread() {
             settings_api_key: String::new(),
             settings_model: String::new(),
             settings_lang: String::new(),
+            is_translating: false,
         };
         let native_options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
@@ -68,6 +71,27 @@ pub fn show_output_text(text: String) {
         }
     }
     if let Ok(mut lt) = LAST_TEXT.lock() { *lt = text.clone(); }
+}
+
+pub fn append_text(text: String) {
+    ensure_output_thread();
+    if let Ok(guard) = OUTPUT_SENDER.lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(UiMessage::AppendText(text));
+        }
+    }
+}
+
+pub fn set_translating(translating: bool) {
+    ensure_output_thread();
+    if let Ok(guard) = OUTPUT_SENDER.lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(UiMessage::SetTranslating(translating));
+            if translating {
+                logger::log("UI: showing translating indicator");
+            }
+        }
+    }
 }
 
 pub fn show_settings() {
@@ -109,6 +133,7 @@ struct OutputApp {
     settings_api_key: String,
     settings_model: String,
     settings_lang: String,
+    is_translating: bool,
 }
 
 impl eframe::App for OutputApp {
@@ -162,7 +187,20 @@ impl eframe::App for OutputApp {
                     self.text = new_text;
                     self.need_focus = true;
                     self.show_settings = false;
+                    self.is_translating = false;
                     logger::log("UI: ShowText message received, will show window");
+                }
+                UiMessage::AppendText(chunk) => {
+                    self.text.push_str(&chunk);
+                    if let Ok(mut lt) = LAST_TEXT.lock() { *lt = self.text.clone(); }
+                }
+                UiMessage::SetTranslating(translating) => {
+                    self.is_translating = translating;
+                    if translating {
+                        self.text = String::from("🔄 Translating...");
+                        self.need_focus = true;
+                        self.show_settings = false;
+                    }
                 }
                 UiMessage::OpenSettings => {
                     self.show_settings = true;
@@ -498,6 +536,7 @@ pub fn run_ui_main_thread() {
         settings_api_key: String::new(),
         settings_model: String::new(),
         settings_lang: String::new(),
+        is_translating: false,
     };
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

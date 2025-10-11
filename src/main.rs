@@ -202,7 +202,12 @@ pub(crate) fn write_clipboard_string(s: &str) -> bool {
     }
 }
 
-async fn translate_via_openai(input: &str, target_lang: &str, api_key: &str, model: &str) -> anyhow::Result<String> {
+async fn translate_via_openai_stream<F>(input: &str, target_lang: &str, api_key: &str, model: &str, mut on_chunk: F) -> anyhow::Result<String>
+where
+    F: FnMut(String),
+{
+    use futures_util::StreamExt;
+    
     // Shorter, optimized system prompt for faster responses
     let system = format!("Translate to {}. Output only translation.", target_lang);
     let req = ChatRequest {
@@ -211,9 +216,9 @@ async fn translate_via_openai(input: &str, target_lang: &str, api_key: &str, mod
             ChatMessage { role: "system", content: &system },
             ChatMessage { role: "user", content: input },
         ],
-        temperature: 0.0,  // 0 for fastest, most deterministic responses
-        max_tokens: Some(2048),  // Limit tokens for faster response
-        stream: false,
+        temperature: 0.0,
+        max_tokens: Some(2048),
+        stream: true,  // Enable streaming
     };
 
     let resp = CLIENT
@@ -229,14 +234,50 @@ async fn translate_via_openai(input: &str, target_lang: &str, api_key: &str, mod
         anyhow::bail!("OpenAI error {}: {}", status, text);
     }
 
-    let parsed: ChatResponse = resp.json().await?;
-    let out = parsed
-        .choices
-        .get(0)
-        .map(|c| c.message.content.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("Empty response"))?;
-    Ok(out)
+    let mut stream = resp.bytes_stream();
+    let mut full_text = String::new();
+    let mut buffer = Vec::new();
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result?;
+        buffer.extend_from_slice(&chunk);
+        
+        // Convert buffer to string and process
+        let buffer_str = String::from_utf8_lossy(&buffer);
+        let mut remaining = String::new();
+        
+        // Process complete SSE events (lines starting with "data: ")
+        for line in buffer_str.lines() {
+            let line = line.trim();
+            
+            if line.starts_with("data: ") {
+                let json_str = &line[6..];
+                if json_str == "[DONE]" {
+                    break;
+                }
+                
+                // Parse the JSON chunk
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
+                        full_text.push_str(content);
+                        on_chunk(content.to_string());
+                    }
+                }
+            } else if !line.is_empty() && !line.starts_with("data:") {
+                remaining.push_str(line);
+                remaining.push('\n');
+            }
+        }
+        
+        // Keep incomplete data in buffer
+        buffer = remaining.into_bytes();
+    }
+
+    if full_text.is_empty() {
+        anyhow::bail!("Empty response from OpenAI");
+    }
+    
+    Ok(full_text)
 }
 
 fn toast(title: &str, body: &str) {
@@ -380,31 +421,38 @@ fn main() {
                         toast("GPTTrans", "Clipboard is empty.");
                         logger::log("Hotkey: Clipboard empty");
                     } else {
+                        // Show window immediately with loading indicator
+                        ui::set_translating(true);
                         toast("GPTTrans", "Translating...");
                         logger::log(&format!("Translating {} chars with model {} to {}", text.len(), model, target_lang));
-                        let res = rt.block_on(async move { translate_via_openai(&text, &target_lang, &api_key, &model).await });
+                        
+                        let res = rt.block_on(async move {
+                            // Clear text and start fresh
+                            ui::show_output_text(String::new());
+                            
+                            translate_via_openai_stream(&text, &target_lang, &api_key, &model, |chunk| {
+                                // Stream each chunk to the UI as it arrives
+                                ui::append_text(chunk);
+                            }).await
+                        });
+                        
                         match res {
                             Ok(out) => {
+                                ui::set_translating(false);
                                 let ok = write_clipboard_string(&out);
                                 if ok {
-                                    toast("GPTTrans", "Translation copied to clipboard.");
+                                    toast("GPTTrans", "Copied to clipboard!");
                                     logger::log("Translation success; copied to clipboard");
                                 } else {
-                                    toast("GPTTrans", "Translated. Failed to write clipboard.");
+                                    toast("GPTTrans", "Translated (copy failed)");
                                     logger::log("Translation success; failed to write clipboard");
                                 }
-                                ui::show_output_text(out.clone());
-                                // Fallback: if UI hasn't updated, show a native message box with the translation
-                                thread::spawn(move || {
-                                    thread::sleep(Duration::from_millis(900));
-                                    if !ui::has_ever_updated() {
-                                        show_message_box("GPTTrans - Translation", &out);
-                                    }
-                                });
                             }
                             Err(e) => {
+                                ui::set_translating(false);
                                 toast("GPTTrans", &format!("Error: {}", e));
                                 logger::log(&format!("Translation error: {}", e));
+                                ui::show_output_text(format!("❌ Error: {}", e));
                             }
                         }
                     }
