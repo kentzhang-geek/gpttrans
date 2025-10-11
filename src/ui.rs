@@ -9,23 +9,38 @@ use std::time::Duration;
 use std::thread;
 use std::fs;
 
-static OUTPUT_SENDER: Lazy<Mutex<Option<mpsc::Sender<String>>>> = Lazy::new(|| Mutex::new(None));
+static OUTPUT_SENDER: Lazy<Mutex<Option<mpsc::Sender<UiMessage>>>> = Lazy::new(|| Mutex::new(None));
 static LAST_TEXT: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 static HAS_UPDATED: AtomicBool = AtomicBool::new(false);
 static FONTS_SET: AtomicBool = AtomicBool::new(false);
 static WINDOW_VISIBLE: AtomicBool = AtomicBool::new(false);
+static CONFIG: Lazy<Mutex<Option<Arc<Mutex<Config>>>>> = Lazy::new(|| Mutex::new(None));
+
+enum UiMessage {
+    ShowText(String),
+    OpenSettings,
+}
 
 fn ensure_output_thread() {
     let mut guard = OUTPUT_SENDER.lock().unwrap();
     if guard.is_some() {
         return;
     }
-    let (tx, rx) = mpsc::channel::<String>();
+    let (tx, rx) = mpsc::channel::<UiMessage>();
     *guard = Some(tx);
 
     thread::spawn(move || {
         logger::log("Output UI thread: starting");
-        let app = OutputApp { text: String::new(), rx, need_focus: false, first: true, logged_init: false };
+        let app = OutputApp { 
+            text: String::new(), 
+            rx, 
+            need_focus: false, 
+            first: true, 
+            show_settings: false,
+            settings_api_key: String::new(),
+            settings_model: String::new(),
+            settings_lang: String::new(),
+        };
         let native_options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_title("GPTTrans - Translation")
@@ -47,26 +62,21 @@ fn ensure_output_thread() {
 
 pub fn show_output_text(text: String) {
     ensure_output_thread();
-    if let Ok(mut guard) = OUTPUT_SENDER.lock() {
+    if let Ok(guard) = OUTPUT_SENDER.lock() {
         if let Some(tx) = guard.as_ref() {
-            let _ = tx.send(text.clone());
+            let _ = tx.send(UiMessage::ShowText(text.clone()));
             logger::log("UI: sent translation to output window");
         }
     }
     if let Ok(mut lt) = LAST_TEXT.lock() { *lt = text.clone(); }
-    // If the window is hidden (after user clicked Hide) and UI loop is alive, show a quick native box
-    if HAS_UPDATED.load(Ordering::Relaxed) && !WINDOW_VISIBLE.load(Ordering::Relaxed) {
-        crate::show_message_box("GPTTrans - Translation", &text);
-    }
 }
 
 pub fn show_window() {
     ensure_output_thread();
-    let text = { LAST_TEXT.lock().unwrap().clone() };
     if let Ok(guard) = OUTPUT_SENDER.lock() {
         if let Some(tx) = guard.as_ref() {
-            let _ = tx.send(text);
-            logger::log("UI: requested show (resent last text)");
+            let _ = tx.send(UiMessage::OpenSettings);
+            logger::log("UI: requested open settings");
         }
     }
 }
@@ -75,17 +85,21 @@ pub fn has_ever_updated() -> bool {
     HAS_UPDATED.load(Ordering::Relaxed)
 }
 
-pub fn spawn_settings_window(_cfg: Arc<Mutex<Config>>) {
-    // TODO: move Settings into the same UI thread to avoid winit EventLoop limitations
-    logger::log("Settings window currently disabled to avoid EventLoop conflicts");
+pub fn set_config(cfg: Arc<Mutex<Config>>) {
+    if let Ok(mut config_guard) = CONFIG.lock() {
+        *config_guard = Some(cfg);
+    }
 }
 
 struct OutputApp {
     text: String,
-    rx: mpsc::Receiver<String>,
+    rx: mpsc::Receiver<UiMessage>,
     need_focus: bool,
     first: bool,
-    logged_init: bool,
+    show_settings: bool,
+    settings_api_key: String,
+    settings_model: String,
+    settings_lang: String,
 }
 
 impl eframe::App for OutputApp {
@@ -122,10 +136,30 @@ impl eframe::App for OutputApp {
                 logger::log("No CJK font found; text may render as squares");
             }
         }
-        // Drain any pending texts; keep only the latest
-        while let Ok(new_text) = self.rx.try_recv() {
-            self.text = new_text;
-            self.need_focus = true;
+        
+        // Drain any pending messages
+        while let Ok(msg) = self.rx.try_recv() {
+            match msg {
+                UiMessage::ShowText(new_text) => {
+                    self.text = new_text;
+                    self.need_focus = true;
+                    self.show_settings = false;
+                }
+                UiMessage::OpenSettings => {
+                    self.show_settings = true;
+                    self.need_focus = true;
+                    // Load current config
+                    if let Ok(cfg_guard) = CONFIG.lock() {
+                        if let Some(cfg_arc) = cfg_guard.as_ref() {
+                            if let Ok(cfg) = cfg_arc.lock() {
+                                self.settings_api_key = cfg.openai_api_key.clone();
+                                self.settings_model = cfg.openai_model.clone();
+                                self.settings_lang = cfg.target_lang.clone();
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         if self.first || self.need_focus {
@@ -137,6 +171,16 @@ impl eframe::App for OutputApp {
             logger::log("Output window: shown (focused)");
         }
 
+        if self.show_settings {
+            self.show_settings_ui(ctx);
+        } else {
+            self.show_translation_ui(ctx);
+        }
+    }
+}
+
+impl OutputApp {
+    fn show_translation_ui(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Translation");
@@ -144,9 +188,24 @@ impl eframe::App for OutputApp {
                     if ui.button("Hide").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                         WINDOW_VISIBLE.store(false, Ordering::Relaxed);
+                        logger::log("Output window: hidden by user");
                     }
                     if ui.button("Copy").clicked() {
                         let _ = write_clipboard_string(&self.text);
+                        logger::log("Text copied to clipboard");
+                    }
+                    if ui.button("Settings").clicked() {
+                        self.show_settings = true;
+                        // Load current config
+                        if let Ok(cfg_guard) = CONFIG.lock() {
+                            if let Some(cfg_arc) = cfg_guard.as_ref() {
+                                if let Ok(cfg) = cfg_arc.lock() {
+                                    self.settings_api_key = cfg.openai_api_key.clone();
+                                    self.settings_model = cfg.openai_model.clone();
+                                    self.settings_lang = cfg.target_lang.clone();
+                                }
+                            }
+                        }
                     }
                 });
             });
@@ -164,6 +223,86 @@ impl eframe::App for OutputApp {
                 });
         });
     }
+
+    fn show_settings_ui(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("settings_top").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Settings");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Close").clicked() {
+                        self.show_settings = false;
+                    }
+                });
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.add_space(20.0);
+            
+            egui::Grid::new("settings_grid")
+                .num_columns(2)
+                .spacing([40.0, 10.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label("OpenAI API Key:");
+                    ui.add(egui::TextEdit::singleline(&mut self.settings_api_key)
+                        .password(true)
+                        .desired_width(400.0));
+                    ui.end_row();
+
+                    ui.label("Model:");
+                    ui.add(egui::TextEdit::singleline(&mut self.settings_model)
+                        .desired_width(400.0));
+                    ui.end_row();
+
+                    ui.label("Target Language:");
+                    ui.add(egui::TextEdit::singleline(&mut self.settings_lang)
+                        .desired_width(400.0));
+                    ui.end_row();
+                });
+
+            ui.add_space(20.0);
+            
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    // Save to config
+                    if let Ok(cfg_guard) = CONFIG.lock() {
+                        if let Some(cfg_arc) = cfg_guard.as_ref() {
+                            if let Ok(mut cfg) = cfg_arc.lock() {
+                                cfg.openai_api_key = self.settings_api_key.clone();
+                                cfg.openai_model = self.settings_model.clone();
+                                cfg.target_lang = self.settings_lang.clone();
+                                
+                                match cfg.save() {
+                                    Ok(_) => {
+                                        logger::log("Settings saved to config.json");
+                                        crate::toast("GPTTrans", "Settings saved successfully!");
+                                        self.show_settings = false;
+                                    }
+                                    Err(e) => {
+                                        logger::log(&format!("Failed to save settings: {}", e));
+                                        crate::toast("GPTTrans", &format!("Failed to save: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if ui.button("Cancel").clicked() {
+                    self.show_settings = false;
+                }
+            });
+
+            ui.add_space(20.0);
+            ui.separator();
+            ui.add_space(10.0);
+            
+            ui.label("Config file location:");
+            let config_path = Config::path();
+            ui.label(config_path.display().to_string());
+        });
+    }
 }
 
 // Run the UI event loop on the main thread (blocking)
@@ -173,12 +312,21 @@ pub fn run_ui_main_thread() {
         logger::log("UI already running; run_ui_main_thread called twice");
         return;
     }
-    let (tx, rx) = mpsc::channel::<String>();
+    let (tx, rx) = mpsc::channel::<UiMessage>();
     *guard = Some(tx);
     drop(guard);
 
     logger::log("Main UI: starting event loop");
-    let app = OutputApp { text: String::new(), rx, need_focus: false, first: true, logged_init: false };
+    let app = OutputApp { 
+        text: String::new(), 
+        rx, 
+        need_focus: false, 
+        first: true, 
+        show_settings: false,
+        settings_api_key: String::new(),
+        settings_model: String::new(),
+        settings_lang: String::new(),
+    };
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("GPTTrans - Translation")

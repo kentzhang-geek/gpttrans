@@ -9,35 +9,6 @@ mod config;
 mod ui;
 mod logger;
 
-// Pump Windows messages on the thread that owns the tray icon, while preserving WM_HOTKEY for explicit handling
-#[cfg(windows)]
-fn process_windows_messages_nonblocking(hotkey_tx: &std::sync::mpsc::Sender<()>) {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging as wm;
-    unsafe {
-        // First, drain any WM_HOTKEY and forward to our channel
-        let mut hot = wm::MSG::default();
-        while wm::PeekMessageW(&mut hot, HWND(std::ptr::null_mut()), wm::WM_HOTKEY, wm::WM_HOTKEY, wm::PM_REMOVE).into() {
-            let _ = hotkey_tx.send(());
-        }
-
-        // Then process all other messages (two ranges to skip WM_HOTKEY)
-        let mut msg = wm::MSG::default();
-        while wm::PeekMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, wm::WM_HOTKEY - 1, wm::PM_REMOVE).into() {
-            let _ = wm::TranslateMessage(&msg);
-            wm::DispatchMessageW(&msg);
-        }
-        let mut msg2 = wm::MSG::default();
-        while wm::PeekMessageW(&mut msg2, HWND(std::ptr::null_mut()), wm::WM_HOTKEY + 1, u32::MAX, wm::PM_REMOVE).into() {
-            let _ = wm::TranslateMessage(&msg2);
-            wm::DispatchMessageW(&msg2);
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn process_windows_messages_nonblocking(_hotkey_tx: &std::sync::mpsc::Sender<()>) {}
-
 #[cfg(windows)]
 mod win_hotkey {
     use std::thread;
@@ -362,9 +333,11 @@ fn main() {
         toast("GPTTrans", "Ready. Press Alt+F3 to translate clipboard.");
     }
 
+    // Pass config to UI module
+    ui::set_config(Arc::clone(&cfg));
+
     // Background: tray actions
     {
-        let cfg = Arc::clone(&cfg);
         thread::spawn(move || {
             while let Ok(act) = tray_rx.recv() {
                 match act {
