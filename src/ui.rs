@@ -35,7 +35,6 @@ fn ensure_output_thread() {
             text: String::new(), 
             rx, 
             need_focus: false, 
-            first: true, 
             show_settings: false,
             settings_api_key: String::new(),
             settings_model: String::new(),
@@ -95,7 +94,6 @@ struct OutputApp {
     text: String,
     rx: mpsc::Receiver<UiMessage>,
     need_focus: bool,
-    first: bool,
     show_settings: bool,
     settings_api_key: String,
     settings_model: String,
@@ -108,6 +106,15 @@ impl eframe::App for OutputApp {
         ctx.request_repaint_after(Duration::from_millis(120));
         if !HAS_UPDATED.swap(true, Ordering::Relaxed) {
             logger::log("Output window: update entered");
+        }
+        
+        // Handle ESC key to hide window
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            // Move window off-screen instead of hiding it to keep event loop running
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-10000.0, -10000.0)));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
+            WINDOW_VISIBLE.store(false, Ordering::Relaxed);
+            logger::log("Output window: hidden by ESC key (moved off-screen)");
         }
         if !FONTS_SET.swap(true, Ordering::Relaxed) {
             let candidates = [
@@ -144,10 +151,12 @@ impl eframe::App for OutputApp {
                     self.text = new_text;
                     self.need_focus = true;
                     self.show_settings = false;
+                    logger::log("UI: ShowText message received, will show window");
                 }
                 UiMessage::OpenSettings => {
                     self.show_settings = true;
                     self.need_focus = true;
+                    logger::log("UI: OpenSettings message received, will show window");
                     // Load current config
                     if let Ok(cfg_guard) = CONFIG.lock() {
                         if let Some(cfg_arc) = cfg_guard.as_ref() {
@@ -162,13 +171,23 @@ impl eframe::App for OutputApp {
             }
         }
 
-        if self.first || self.need_focus {
-            self.first = false;
-            self.need_focus = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        // Show and focus window when needed
+        if self.need_focus {
+            let was_visible = WINDOW_VISIBLE.load(Ordering::Relaxed);
+            logger::log(&format!("UI: Showing window (was_visible={})", was_visible));
+            
+            // Restore window size and position to center of screen
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(800.0, 560.0)));
+            // Move to center (approximate - let OS position it)
+            if let Some(monitor_size) = ctx.input(|i| i.viewport().monitor_size) {
+                let x = (monitor_size.x - 800.0) / 2.0;
+                let y = (monitor_size.y - 560.0) / 2.0;
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x.max(0.0), y.max(0.0))));
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            
             WINDOW_VISIBLE.store(true, Ordering::Relaxed);
-            logger::log("Output window: shown (focused)");
+            self.need_focus = false;
         }
 
         if self.show_settings {
@@ -185,10 +204,12 @@ impl OutputApp {
             ui.horizontal(|ui| {
                 ui.heading("Translation");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Hide").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    if ui.button("Hide (ESC)").clicked() {
+                        // Move window off-screen instead of hiding to keep event loop running
+                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-10000.0, -10000.0)));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
                         WINDOW_VISIBLE.store(false, Ordering::Relaxed);
-                        logger::log("Output window: hidden by user");
+                        logger::log("Output window: hidden by user (moved off-screen)");
                     }
                     if ui.button("Copy").clicked() {
                         let _ = write_clipboard_string(&self.text);
@@ -320,8 +341,7 @@ pub fn run_ui_main_thread() {
     let app = OutputApp { 
         text: String::new(), 
         rx, 
-        need_focus: false, 
-        first: true, 
+        need_focus: false,
         show_settings: false,
         settings_api_key: String::new(),
         settings_model: String::new(),
@@ -330,9 +350,12 @@ pub fn run_ui_main_thread() {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("GPTTrans - Translation")
-            .with_inner_size([800.0, 560.0])
+            .with_inner_size([1.0, 1.0])  // Start tiny
+            .with_position(egui::pos2(-10000.0, -10000.0))  // Start off-screen
             .with_always_on_top()
-            .with_visible(true),
+            .with_taskbar(false)  // Don't show in taskbar
+            .with_decorations(true)
+            .with_visible(true),  // Keep visible to egui (but off-screen)
         ..Default::default()
     };
     match eframe::run_native(
