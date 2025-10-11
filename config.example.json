@@ -1,6 +1,6 @@
 {
   "openai_api_key": "",
-  "openai_model": "gemma3:1b",
+  "openai_model": "gemma3:270m",
   "target_lang": "Chinese",
   "hotkey": "Alt+F3",
   "api_type": "ollama",

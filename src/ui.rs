@@ -236,7 +236,8 @@ impl eframe::App for OutputApp {
                                 };
                                 self.selected_model = match (cfg.api_type.as_str(), cfg.openai_model.as_str()) {
                                     ("openai", "gpt-4o-mini") => 0,
-                                    ("ollama", "gemma3:1b") => 1,
+                                    ("ollama", "gemma3:1b") => 0,
+                                    ("ollama", "gemma3:270m") => 1,
                                     _ => 0,
                                 };
                             }
@@ -404,7 +405,8 @@ impl OutputApp {
                                                 };
                                                 self.selected_model = match (cfg.api_type.as_str(), cfg.openai_model.as_str()) {
                                                     ("openai", "gpt-4o-mini") => 0,
-                                                    ("ollama", "gemma3:1b") => 1,
+                                                    ("ollama", "gemma3:1b") => 0,
+                                                    ("ollama", "gemma3:270m") => 1,
                                                     _ => 0,
                                                 };
                                             }
@@ -598,15 +600,20 @@ impl OutputApp {
                             ui.add_space(4.0);
                             egui::ComboBox::from_id_source("model")
                                 .selected_text(if self.selected_api_type == 0 {
-                                    if self.selected_model == 0 { "GPT-4o Mini" } else { "GPT-4o Mini" }
+                                    "GPT-4o Mini"
                                 } else {
-                                    if self.selected_model == 0 { "Gemma3 1B" } else { "Gemma3 1B" }
+                                    match self.selected_model {
+                                        0 => "Gemma3 1B",
+                                        1 => "Gemma3 270M",
+                                        _ => "Gemma3 1B",
+                                    }
                                 })
                                 .show_ui(ui, |ui| {
                                     if self.selected_api_type == 0 {
                                         ui.selectable_value(&mut self.selected_model, 0, "GPT-4o Mini");
                                     } else {
                                         ui.selectable_value(&mut self.selected_model, 0, "Gemma3 1B");
+                                        ui.selectable_value(&mut self.selected_model, 1, "Gemma3 270M");
                                     }
                                 });
                             
@@ -614,7 +621,11 @@ impl OutputApp {
                             let new_model = if self.selected_api_type == 0 {
                                 "gpt-4o-mini".to_string()
                             } else {
-                                "gemma3:1b".to_string()
+                                match self.selected_model {
+                                    0 => "gemma3:1b".to_string(),
+                                    1 => "gemma3:270m".to_string(),
+                                    _ => "gemma3:1b".to_string(),
+                                }
                             };
                             if self.settings_model != new_model {
                                 self.settings_model = new_model;
