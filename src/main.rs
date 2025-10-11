@@ -155,6 +155,8 @@ struct ChatRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
     temperature: f32,
+    max_tokens: Option<u32>,
+    stream: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -201,17 +203,17 @@ pub(crate) fn write_clipboard_string(s: &str) -> bool {
 }
 
 async fn translate_via_openai(input: &str, target_lang: &str, api_key: &str, model: &str) -> anyhow::Result<String> {
-    let system = format!(
-        "You are a professional translator. Translate the user's text into {}. Preserve meaning, tone, and formatting. Only output the translation.",
-        target_lang
-    );
+    // Shorter, optimized system prompt for faster responses
+    let system = format!("Translate to {}. Output only translation.", target_lang);
     let req = ChatRequest {
         model,
         messages: vec![
             ChatMessage { role: "system", content: &system },
             ChatMessage { role: "user", content: input },
         ],
-        temperature: 0.2,
+        temperature: 0.0,  // 0 for fastest, most deterministic responses
+        max_tokens: Some(2048),  // Limit tokens for faster response
+        stream: false,
     };
 
     let resp = CLIENT

@@ -211,129 +211,270 @@ impl eframe::App for OutputApp {
 
 impl OutputApp {
     fn show_translation_ui(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("top").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Translation");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Hide (ESC)").clicked() {
-                        // Move window off-screen instead of hiding to keep event loop running
-                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-10000.0, -10000.0)));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
-                        WINDOW_VISIBLE.store(false, Ordering::Relaxed);
-                        logger::log("Output window: hidden by user (moved off-screen)");
+        // Custom frameless window with rounded corners
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none()
+                .fill(egui::Color32::from_rgb(28, 31, 38))
+                .rounding(egui::Rounding::same(12.0))
+                .inner_margin(egui::Margin::same(0.0)))
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    // Custom title bar with drag area
+                    let title_bar_height = 48.0;
+                    let title_bar_rect = {
+                        let mut rect = ui.available_rect_before_wrap();
+                        rect.max.y = rect.min.y + title_bar_height;
+                        rect
+                    };
+                    
+                    let title_bar_response = ui.allocate_rect(title_bar_rect, egui::Sense::click());
+                    if title_bar_response.clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
-                    if ui.button("Copy").clicked() {
-                        let _ = write_clipboard_string(&self.text);
-                        logger::log("Text copied to clipboard");
-                    }
-                    if ui.button("Settings").clicked() {
-                        self.show_settings = true;
-                        // Load current config
-                        if let Ok(cfg_guard) = CONFIG.lock() {
-                            if let Some(cfg_arc) = cfg_guard.as_ref() {
-                                if let Ok(cfg) = cfg_arc.lock() {
-                                    self.settings_api_key = cfg.openai_api_key.clone();
-                                    self.settings_model = cfg.openai_model.clone();
-                                    self.settings_lang = cfg.target_lang.clone();
+                    
+                    // Draw custom title bar
+                    ui.painter().rect_filled(
+                        title_bar_rect,
+                        egui::Rounding { nw: 12.0, ne: 12.0, sw: 0.0, se: 0.0 },
+                        egui::Color32::from_rgb(35, 39, 46),
+                    );
+                    
+                    ui.allocate_ui_at_rect(title_bar_rect, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_space(16.0);
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new("📝 GPTTrans")
+                                    .size(18.0)
+                                    .color(egui::Color32::from_rgb(138, 180, 248)));
+                            });
+                            
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add_space(8.0);
+                                
+                                // Close button
+                                let close_btn = ui.add_sized(
+                                    [36.0, 36.0],
+                                    egui::Button::new(egui::RichText::new("✕").size(16.0))
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .stroke(egui::Stroke::NONE)
+                                );
+                                if close_btn.clicked() {
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-10000.0, -10000.0)));
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
+                                    WINDOW_VISIBLE.store(false, Ordering::Relaxed);
+                                    logger::log("Output window: hidden by user (moved off-screen)");
                                 }
-                            }
-                        }
-                    }
+                                
+                                // Settings button
+                                let settings_btn = ui.add_sized(
+                                    [36.0, 36.0],
+                                    egui::Button::new(egui::RichText::new("⚙").size(16.0))
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .stroke(egui::Stroke::NONE)
+                                );
+                                if settings_btn.clicked() {
+                                    self.show_settings = true;
+                                    if let Ok(cfg_guard) = CONFIG.lock() {
+                                        if let Some(cfg_arc) = cfg_guard.as_ref() {
+                                            if let Ok(cfg) = cfg_arc.lock() {
+                                                self.settings_api_key = cfg.openai_api_key.clone();
+                                                self.settings_model = cfg.openai_model.clone();
+                                                self.settings_lang = cfg.target_lang.clone();
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Copy button
+                                let copy_btn = ui.add_sized(
+                                    [36.0, 36.0],
+                                    egui::Button::new(egui::RichText::new("📋").size(16.0))
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .stroke(egui::Stroke::NONE)
+                                );
+                                if copy_btn.clicked() {
+                                    let _ = write_clipboard_string(&self.text);
+                                    logger::log("Text copied to clipboard");
+                                }
+                            });
+                        });
+                    });
+                    
+                    ui.add_space(8.0);
+                    
+                    // Content area with padding
+                    egui::Frame::none()
+                        .inner_margin(egui::Margin::symmetric(16.0, 8.0))
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut self.text)
+                                            .desired_rows(20)
+                                            .desired_width(f32::INFINITY)
+                                            .font(egui::TextStyle::Body)
+                                            .frame(true)
+                                    );
+                                });
+                        });
+                    
+                    ui.add_space(8.0);
                 });
             });
-        });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.text)
-                            .desired_rows(20)
-                            .desired_width(f32::INFINITY),
-                    );
-                });
-        });
     }
 
     fn show_settings_ui(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("settings_top").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Settings");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        self.show_settings = false;
+        // Modern settings panel with same styling
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none()
+                .fill(egui::Color32::from_rgb(28, 31, 38))
+                .rounding(egui::Rounding::same(12.0))
+                .inner_margin(egui::Margin::same(0.0)))
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    // Custom title bar
+                    let title_bar_height = 48.0;
+                    let title_bar_rect = {
+                        let mut rect = ui.available_rect_before_wrap();
+                        rect.max.y = rect.min.y + title_bar_height;
+                        rect
+                    };
+                    
+                    let title_bar_response = ui.allocate_rect(title_bar_rect, egui::Sense::click());
+                    if title_bar_response.clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
-                });
-            });
-        });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(20.0);
-            
-            egui::Grid::new("settings_grid")
-                .num_columns(2)
-                .spacing([40.0, 10.0])
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label("OpenAI API Key:");
-                    ui.add(egui::TextEdit::singleline(&mut self.settings_api_key)
-                        .password(true)
-                        .desired_width(400.0));
-                    ui.end_row();
-
-                    ui.label("Model:");
-                    ui.add(egui::TextEdit::singleline(&mut self.settings_model)
-                        .desired_width(400.0));
-                    ui.end_row();
-
-                    ui.label("Target Language:");
-                    ui.add(egui::TextEdit::singleline(&mut self.settings_lang)
-                        .desired_width(400.0));
-                    ui.end_row();
-                });
-
-            ui.add_space(20.0);
-            
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    // Save to config
-                    if let Ok(cfg_guard) = CONFIG.lock() {
-                        if let Some(cfg_arc) = cfg_guard.as_ref() {
-                            if let Ok(mut cfg) = cfg_arc.lock() {
-                                cfg.openai_api_key = self.settings_api_key.clone();
-                                cfg.openai_model = self.settings_model.clone();
-                                cfg.target_lang = self.settings_lang.clone();
-                                
-                                match cfg.save() {
-                                    Ok(_) => {
-                                        logger::log("Settings saved to config.json");
-                                        crate::toast("GPTTrans", "Settings saved successfully!");
-                                        self.show_settings = false;
-                                    }
-                                    Err(e) => {
-                                        logger::log(&format!("Failed to save settings: {}", e));
-                                        crate::toast("GPTTrans", &format!("Failed to save: {}", e));
+                    
+                    ui.painter().rect_filled(
+                        title_bar_rect,
+                        egui::Rounding { nw: 12.0, ne: 12.0, sw: 0.0, se: 0.0 },
+                        egui::Color32::from_rgb(35, 39, 46),
+                    );
+                    
+                    ui.allocate_ui_at_rect(title_bar_rect, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_space(16.0);
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new("⚙ Settings")
+                                    .size(18.0)
+                                    .color(egui::Color32::from_rgb(138, 180, 248)));
+                            });
+                            
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add_space(8.0);
+                                let close_btn = ui.add_sized(
+                                    [36.0, 36.0],
+                                    egui::Button::new(egui::RichText::new("✕").size(16.0))
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .stroke(egui::Stroke::NONE)
+                                );
+                                if close_btn.clicked() {
+                                    self.show_settings = false;
+                                }
+                            });
+                        });
+                    });
+                    
+                    ui.add_space(16.0);
+                    
+                    // Settings content
+                    egui::Frame::none()
+                        .inner_margin(egui::Margin::symmetric(24.0, 0.0))
+                        .show(ui, |ui| {
+                            ui.add_space(8.0);
+                            
+                            // API Key
+                            ui.label(egui::RichText::new("OpenAI API Key")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(180, 190, 210)));
+                            ui.add_space(4.0);
+                            ui.add(egui::TextEdit::singleline(&mut self.settings_api_key)
+                                .password(true)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("sk-..."));
+                            
+                            ui.add_space(16.0);
+                            
+                            // Model
+                            ui.label(egui::RichText::new("Model")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(180, 190, 210)));
+                            ui.add_space(4.0);
+                            ui.add(egui::TextEdit::singleline(&mut self.settings_model)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("gpt-4o-mini"));
+                            
+                            ui.add_space(16.0);
+                            
+                            // Target Language
+                            ui.label(egui::RichText::new("Target Language")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(180, 190, 210)));
+                            ui.add_space(4.0);
+                            ui.add(egui::TextEdit::singleline(&mut self.settings_lang)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("English"));
+                            
+                            ui.add_space(24.0);
+                            
+                            // Buttons
+                            ui.horizontal(|ui| {
+                                let save_btn = ui.add_sized(
+                                    [100.0, 36.0],
+                                    egui::Button::new(egui::RichText::new("💾 Save").size(14.0))
+                                        .fill(egui::Color32::from_rgb(67, 97, 238))
+                                );
+                                if save_btn.clicked() {
+                                    if let Ok(cfg_guard) = CONFIG.lock() {
+                                        if let Some(cfg_arc) = cfg_guard.as_ref() {
+                                            if let Ok(mut cfg) = cfg_arc.lock() {
+                                                cfg.openai_api_key = self.settings_api_key.clone();
+                                                cfg.openai_model = self.settings_model.clone();
+                                                cfg.target_lang = self.settings_lang.clone();
+                                                
+                                                match cfg.save() {
+                                                    Ok(_) => {
+                                                        logger::log("Settings saved to config.json");
+                                                        crate::toast("GPTTrans", "Settings saved!");
+                                                        self.show_settings = false;
+                                                    }
+                                                    Err(e) => {
+                                                        logger::log(&format!("Failed to save: {}", e));
+                                                        crate::toast("GPTTrans", &format!("Failed: {}", e));
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        }
-                    }
-                }
-                
-                if ui.button("Cancel").clicked() {
-                    self.show_settings = false;
-                }
+                                
+                                let cancel_btn = ui.add_sized(
+                                    [100.0, 36.0],
+                                    egui::Button::new(egui::RichText::new("Cancel").size(14.0))
+                                        .fill(egui::Color32::from_rgb(55, 60, 70))
+                                );
+                                if cancel_btn.clicked() {
+                                    self.show_settings = false;
+                                }
+                            });
+                            
+                            ui.add_space(20.0);
+                            ui.separator();
+                            ui.add_space(12.0);
+                            
+                            ui.label(egui::RichText::new("Config file:")
+                                .size(12.0)
+                                .color(egui::Color32::from_rgb(130, 140, 160)));
+                            let config_path = Config::path();
+                            ui.label(egui::RichText::new(config_path.display().to_string())
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(100, 110, 130)));
+                        });
+                });
             });
-
-            ui.add_space(20.0);
-            ui.separator();
-            ui.add_space(10.0);
-            
-            ui.label("Config file location:");
-            let config_path = Config::path();
-            ui.label(config_path.display().to_string());
-        });
     }
 }
 
@@ -360,13 +501,14 @@ pub fn run_ui_main_thread() {
     };
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("GPTTrans - Translation")
-            .with_inner_size([1.0, 1.0])  // Start tiny
+            .with_title("GPTTrans")
+            .with_inner_size([800.0, 600.0])
             .with_position(egui::pos2(-10000.0, -10000.0))  // Start off-screen
             .with_always_on_top()
             .with_taskbar(false)  // Don't show in taskbar
-            .with_decorations(true)
-            .with_visible(true),  // Keep visible to egui (but off-screen)
+            .with_decorations(false)  // Frameless window
+            .with_visible(true)  // Keep visible to egui (but off-screen)
+            .with_transparent(true),  // Allow transparency for rounded corners
         ..Default::default()
     };
     match eframe::run_native(
