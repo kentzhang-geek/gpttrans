@@ -202,7 +202,15 @@ pub(crate) fn write_clipboard_string(s: &str) -> bool {
     }
 }
 
-async fn translate_via_openai_stream<F>(input: &str, target_lang: &str, api_key: &str, model: &str, mut on_chunk: F) -> anyhow::Result<String>
+async fn translate_via_openai_stream<F>(
+    input: &str, 
+    target_lang: &str, 
+    api_key: &str, 
+    model: &str, 
+    api_base: &str,
+    api_type: &str,
+    mut on_chunk: F
+) -> anyhow::Result<String>
 where
     F: FnMut(String),
 {
@@ -221,17 +229,21 @@ where
         stream: true,  // Enable streaming
     };
 
-    let resp = CLIENT
-        .post("https://api.openai.com/v1/chat/completions")
-        .bearer_auth(api_key)
-        .json(&req)
-        .send()
-        .await?;
+    // Build request with appropriate authentication
+    let endpoint = format!("{}/chat/completions", api_base);
+    let mut request_builder = CLIENT.post(&endpoint).json(&req);
+    
+    // Add authentication based on API type
+    if api_type != "ollama" && !api_key.is_empty() {
+        request_builder = request_builder.bearer_auth(api_key);
+    }
+    
+    let resp = request_builder.send().await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("OpenAI error {}: {}", status, text);
+        anyhow::bail!("API error {}: {}", status, text);
     }
 
     let mut stream = resp.bytes_stream();
@@ -427,13 +439,15 @@ fn main() {
         thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("tokio rt");
             while let Ok(()) = hotkey_rx.recv() {
-                let (api_key, model, target_lang) = {
+                let (api_key, model, target_lang, api_base, api_type) = {
                     let c = cfg.lock().unwrap().clone();
-                    (c.openai_api_key, c.openai_model, c.target_lang)
+                    (c.openai_api_key, c.openai_model, c.target_lang, c.api_base, c.api_type)
                 };
-                if api_key.is_empty() {
-                    toast("GPTTrans", "Missing OPENAI_API_KEY.");
-                    logger::log("Hotkey: Missing OPENAI_API_KEY");
+                
+                // Check if API key is required (not needed for Ollama)
+                if api_type != "ollama" && api_key.is_empty() {
+                    toast("GPTTrans", "Missing API key. Configure in settings.");
+                    logger::log("Hotkey: Missing API key");
                 } else if let Some(text) = read_clipboard_string() {
                     if text.trim().is_empty() {
                         toast("GPTTrans", "Clipboard is empty.");
@@ -442,13 +456,13 @@ fn main() {
                         // Show window immediately with loading indicator
                         ui::set_translating(true);
                         toast("GPTTrans", "Translating...");
-                        logger::log(&format!("Translating {} chars with model {} to {}", text.len(), model, target_lang));
+                        logger::log(&format!("Translating {} chars with {} ({}) to {}", text.len(), model, api_type, target_lang));
                         
                         let res = rt.block_on(async move {
                             // Clear text and start fresh
                             ui::show_output_text(String::new());
                             
-                            translate_via_openai_stream(&text, &target_lang, &api_key, &model, |chunk| {
+                            translate_via_openai_stream(&text, &target_lang, &api_key, &model, &api_base, &api_type, |chunk| {
                                 // Stream each chunk to the UI as it arrives
                                 ui::append_text(chunk);
                             }).await

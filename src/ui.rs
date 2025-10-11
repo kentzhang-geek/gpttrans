@@ -42,6 +42,8 @@ fn ensure_output_thread() {
             settings_model: String::new(),
             settings_lang: String::new(),
             settings_hotkey: String::new(),
+            settings_api_type: String::new(),
+            settings_api_base: String::new(),
             is_translating: false,
         };
         let native_options = eframe::NativeOptions {
@@ -135,6 +137,8 @@ struct OutputApp {
     settings_model: String,
     settings_lang: String,
     settings_hotkey: String,
+    settings_api_type: String,
+    settings_api_base: String,
     is_translating: bool,
 }
 
@@ -216,6 +220,8 @@ impl eframe::App for OutputApp {
                                 self.settings_model = cfg.openai_model.clone();
                                 self.settings_lang = cfg.target_lang.clone();
                                 self.settings_hotkey = cfg.hotkey.clone();
+                                self.settings_api_type = cfg.api_type.clone();
+                                self.settings_api_base = cfg.api_base.clone();
                             }
                         }
                     }
@@ -370,6 +376,8 @@ impl OutputApp {
                                                 self.settings_model = cfg.openai_model.clone();
                                                 self.settings_lang = cfg.target_lang.clone();
                                                 self.settings_hotkey = cfg.hotkey.clone();
+                                                self.settings_api_type = cfg.api_type.clone();
+                                                self.settings_api_base = cfg.api_base.clone();
                                             }
                                         }
                                     }
@@ -391,9 +399,9 @@ impl OutputApp {
                                     );
                                 }
                                 if copy_btn.clicked() {
-                                    let _ = write_clipboard_string(&self.text);
+                        let _ = write_clipboard_string(&self.text);
                                     logger::log("Text copied to clipboard");
-                                }
+                    }
                 });
             });
         });
@@ -506,10 +514,13 @@ impl OutputApp {
                     
                     ui.add_space(16.0);
                     
-                    // Settings content
-                    egui::Frame::none()
-                        .inner_margin(egui::Margin::symmetric(24.0, 0.0))
+                    // Settings content - scrollable
+                    egui::ScrollArea::vertical()
+                        .max_height(ui.available_height() - 120.0) // Leave space for buttons and config path
                         .show(ui, |ui| {
+                            egui::Frame::none()
+                                .inner_margin(egui::Margin::symmetric(24.0, 0.0))
+                                .show(ui, |ui| {
                             ui.add_space(8.0);
                             
                             // API Key
@@ -558,9 +569,39 @@ impl OutputApp {
                                 .size(11.0)
                                 .color(egui::Color32::from_rgb(120, 130, 150)));
                             
-                            ui.add_space(24.0);
+                            ui.add_space(16.0);
                             
-                            // Buttons
+                            // API Type
+                            ui.label(egui::RichText::new("API Type")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(180, 190, 210)));
+                            ui.add_space(4.0);
+                            ui.add(egui::TextEdit::singleline(&mut self.settings_api_type)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("openai, ollama, openai-compatible"));
+                            ui.label(egui::RichText::new("'ollama' = free local AI (no API key needed)")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(120, 180, 120)));
+                            
+                            ui.add_space(16.0);
+                            
+                            // API Base URL
+                            ui.label(egui::RichText::new("API Base URL")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(180, 190, 210)));
+                            ui.add_space(4.0);
+                            ui.add(egui::TextEdit::singleline(&mut self.settings_api_base)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("http://localhost:11434/v1 for Ollama"));
+                            
+                            ui.add_space(24.0);
+                            });
+                        });
+                    
+                    // Fixed buttons at bottom (always visible)
+                    egui::Frame::none()
+                        .inner_margin(egui::Margin::symmetric(24.0, 0.0))
+                        .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 let save_btn = ui.add_sized(
                                     [100.0, 36.0],
@@ -575,11 +616,13 @@ impl OutputApp {
                                                 cfg.openai_model = self.settings_model.clone();
                                                 cfg.target_lang = self.settings_lang.clone();
                                                 cfg.hotkey = self.settings_hotkey.clone();
+                                                cfg.api_type = self.settings_api_type.clone();
+                                                cfg.api_base = self.settings_api_base.clone();
                                                 
                                                 match cfg.save() {
                                                     Ok(_) => {
-                                                        logger::log("Settings saved to config.json (restart to apply hotkey)");
-                                                        crate::toast("GPTTrans", "Saved! Restart to apply hotkey change.");
+                                                        logger::log("Settings saved to config.json (restart to apply changes)");
+                                                        crate::toast("GPTTrans", "Saved! Restart to apply changes.");
                                                         self.show_settings = false;
                                                     }
                                                     Err(e) => {
@@ -615,7 +658,7 @@ impl OutputApp {
                                 .color(egui::Color32::from_rgb(100, 110, 130)));
                         });
                 });
-        });
+            });
     }
 }
 
@@ -640,6 +683,8 @@ pub fn run_ui_main_thread() {
         settings_model: String::new(),
         settings_lang: String::new(),
         settings_hotkey: String::new(),
+        settings_api_type: String::new(),
+        settings_api_base: String::new(),
         is_translating: false,
     };
     let native_options = eframe::NativeOptions {

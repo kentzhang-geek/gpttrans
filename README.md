@@ -1,70 +1,294 @@
-GPTTrans (Windows)
+# GPTTrans
 
-A lightweight Windows tray app in Rust that translates clipboard text via the OpenAI API when you press Alt+F3. It writes the translation back to the clipboard, shows a scrollable egui output window, and displays Windows toast notifications. Runs from the system tray with no console or taskbar icon when idle.
+A lightweight Windows tray app in Rust that translates clipboard text via AI when you press a hotkey (default: `Alt+F3`). It writes the translation back to the clipboard, shows a modern frameless output window, and displays Windows toast notifications. Runs from the system tray with no console or taskbar icon when idle.
 
-Purpose
+## 🎯 Purpose
 - Instant clipboard translation with a global hotkey
+- **100% FREE option** with local AI (Ollama) - no API costs!
 - Minimal friction: tray-only background app, no console
-- Local config file, no persistent secrets elsewhere
+- Privacy-focused: use local models or OpenAI
 
-Key Features
-- Global hotkey: Alt+F3 to translate clipboard text
+## ✨ Key Features
+- **Configurable global hotkey** (Alt+F3, Ctrl+Shift+T, etc.)
+- **Multiple AI backends**: OpenAI API, Ollama (free local AI), or any OpenAI-compatible API
+- **Streaming translations**: real-time text updates for faster perceived speed
+- **Modern frameless UI** with dark theme
 - System tray menu: Settings and Quit
-- Scrollable output window (egui) with Copy button
 - Windows toast notifications for status/errors
 - Async HTTP client (reqwest + rustls) and clipboard-win I/O
 
-Requirements
+## 📋 Requirements
 - Windows 10/11
-- Rust toolchain (stable MSVC)
-- OpenAI API Key
+- Rust toolchain (stable MSVC) - for building from source
+- **Option A**: OpenAI API Key (paid)
+- **Option B**: Ollama (FREE, local, private) - see setup below
 
-Configuration
-- Local file: place `config.json` next to the executable (same directory as `gpttrans.exe`). Example:
+## ⚙️ Configuration
+
+### Using OpenAI API (Paid)
+Create `config.json` next to the executable:
+```json
   {
     "openai_api_key": "sk-...",
     "openai_model": "gpt-4o-mini",
-    "target_lang": "English"
-  }
-- Example file included: `config.example.json`. Copy it next to the built exe and rename to `config.json`.
-- Environment variables (if set) override the file for that session:
-  - `OPENAI_API_KEY`
-  - `OPENAI_MODEL`
-  - `TARGET_LANG`
+  "target_lang": "English",
+  "hotkey": "Alt+F3",
+  "api_type": "openai",
+  "api_base": "https://api.openai.com/v1"
+}
+```
 
-Build & Run
-1) Build in a shell (keep tray app closed while building):
-   - cd to the repo folder
-   - cargo build --release
-2) Place `config.json` next to `target\release\gpttrans.exe` (or use Settings after launch).
-3) Launch: `target\release\gpttrans.exe`
+### Using Ollama (FREE - Recommended!)
+```json
+{
+  "openai_api_key": "",
+  "openai_model": "gemma3:270m",
+  "target_lang": "English",
+  "hotkey": "Alt+F3",
+  "api_type": "ollama",
+  "api_base": "http://localhost:11434/v1"
+}
+```
 
-Usage
-- Copy any text, press Alt+F3 to translate. The translated text replaces the clipboard and an egui output window opens (scrollable) to review/copy.
-- Right-click the tray icon to open the menu:
-  - Settings: edit and save config.json (API key, model, target language)
-  - Quit: exit the app
+### Configuration Options
+- `openai_api_key`: Your API key (leave empty for Ollama)
+- `openai_model`: Model name (e.g., `gpt-4o-mini`, `llama3.2:3b`)
+- `target_lang`: Target language for translation
+- `hotkey`: Global hotkey (e.g., `Alt+F3`, `Ctrl+Shift+T`, `Win+Q`)
+- `api_type`: `openai`, `ollama`, or `openai-compatible`
+- `api_base`: API endpoint URL
 
-Security & Privacy
-- The API key is read from `config.json` (next to the exe) or environment variables and sent directly to OpenAI over HTTPS (rustls). No additional persistence is used.
+**Note**: Copy `config.example.json` to `config.json` and modify it. You can also edit settings through the UI (right-click tray icon → Settings).
 
-Troubleshooting
-- Hotkey doesn’t trigger: another program may already register Alt+F3. Close conflicting apps. A configurable hotkey is planned.
-- Tray menu missing/empty: ensure you right-click the icon. If still empty, exit and relaunch; we’re refining tray menu behavior across shells.
-- Toasts don’t appear: enable Windows notifications for apps.
-- GPU/WGPU init errors on some systems: we can switch egui backend if needed.
+## 🚀 Quick Start with FREE Local AI (Ollama)
 
-Known Limitations / TODO
-- Single-instance guard: not yet enforced. Planned via a system-wide named mutex so only one instance runs.
-- Configurable hotkey: planned fields in config.json for modifiers + key (e.g., Alt+F9).
-- Better tray icon & theming: replace the placeholder icon and support light/dark.
+### Step 1: Install Ollama
+```powershell
+# Option A: Download installer
+# Visit: https://ollama.com/download
 
-Security
-- Your API key is only read from the environment and sent directly to the OpenAI API over HTTPS (rustls). No local persistence is implemented.
+# Option B: Use winget
+winget install Ollama.Ollama
+```
 
-Troubleshooting
-- If Alt+F3 doesn't trigger, another program may already register that hotkey. Try closing conflicting apps or we can add a configurable hotkey.
-- If toasts don't appear, ensure Windows notifications are enabled for apps.
+### Step 2: Install a Translation Model
+```powershell
+# Recommended: Fast and good quality (2GB RAM)
+ollama pull llama3.2:3b
 
-License
-This project is licensed under the MIT License - see the LICENSE file for details.
+# Or: Better quality (5GB RAM)
+ollama pull llama3.1:8b
+
+# Or: Excellent for Asian languages (4.5GB RAM)
+ollama pull qwen2.5:7b
+```
+
+### Step 3: Test Ollama
+```powershell
+ollama run llama3.2:3b "Translate to Chinese: Hello world"
+```
+
+### Step 4: Configure GPTTrans
+Create or edit `config.json`:
+```json
+{
+  "openai_api_key": "",
+  "openai_model": "llama3.2:3b",
+  "target_lang": "English",
+  "hotkey": "Alt+F3",
+  "api_type": "ollama",
+  "api_base": "http://localhost:11434/v1"
+}
+```
+
+### Step 5: Build and Run GPTTrans
+```powershell
+cargo build --release
+copy config.json target\release\
+cd target\release
+.\gpttrans.exe
+```
+
+**That's it!** 🎉 You now have:
+- ✅ **100% FREE** translations (no API costs)
+- ✅ **100% PRIVATE** (runs entirely on your computer)
+- ✅ **No rate limits**
+- ✅ **Works offline**
+- ✅ **No chat history** stored anywhere
+
+## 🔨 Build & Run (General)
+
+1. **Build the app**:
+   ```powershell
+   cd gpttrans
+   cargo build --release
+   ```
+
+2. **Configure**:
+   - Copy `config.example.json` to `target\release\config.json`
+   - Edit the config file (or use Settings UI after launch)
+
+3. **Launch**:
+   ```powershell
+   .\target\release\gpttrans.exe
+   ```
+
+## 📖 Usage
+
+1. **Translate Text**:
+   - Copy any text to clipboard
+   - Press your hotkey (default: `Alt+F3`)
+   - Translation appears in a window and is copied to clipboard
+
+2. **Configure Settings**:
+   - Right-click the tray icon → **Settings**
+   - Edit API key, model, language, hotkey, etc.
+   - Click **Save** (requires restart to apply hotkey changes)
+
+3. **View Translation Window**:
+   - Left-click the tray icon to show/hide the translation window
+   - Press `Esc` to hide the window
+   - Click the **Copy** button to copy text again
+
+4. **Exit**:
+   - Right-click tray icon → **Quit**
+
+## 🔐 Security & Privacy
+
+### Using Ollama (Local AI)
+- **100% Private**: All processing happens on your computer
+- **No data leaves your machine**: Translations never touch external servers
+- **No chat history**: Everything is ephemeral and temporary
+- **No account required**: No sign-up, no tracking
+
+### Using OpenAI API
+- Your API key is read from `config.json` and sent directly to OpenAI over HTTPS (rustls-tls)
+- No additional persistence or logging of your API key
+- Translations are processed by OpenAI's servers (subject to their privacy policy)
+- No chat history is maintained by GPTTrans (but may appear in OpenAI's logs)
+
+## 🔧 Troubleshooting
+
+### Hotkey doesn't trigger
+- **Cause**: Another app is using the same hotkey
+- **Solution**: Change the hotkey in Settings (e.g., try `Ctrl+Shift+T` or `Win+Q`)
+
+### "Missing API key" error with Ollama
+- **Cause**: `api_type` is not set to `ollama`
+- **Solution**: In Settings, set API Type to `ollama` and save
+
+### Ollama connection error
+- **Cause**: Ollama is not running or wrong port
+- **Solution**: 
+  ```powershell
+  # Check if Ollama is running
+  ollama list
+  
+  # Restart Ollama service if needed
+  # (It usually auto-starts after installation)
+  ```
+
+### Translations are slow with Ollama
+- **Cause**: Large model or CPU-only mode
+- **Solution**: 
+  - Use a smaller model: `llama3.2:3b` instead of `llama3.1:8b`
+  - Ensure GPU acceleration is enabled (Ollama auto-detects)
+  - Close other resource-intensive apps
+
+### Toast notifications don't appear
+- **Cause**: Windows notifications disabled
+- **Solution**: Enable notifications in Windows Settings → System → Notifications
+
+### Window doesn't show after hotkey press
+- **Cause**: Window might be off-screen or minimized
+- **Solution**: Left-click the tray icon to restore the window
+
+## 🔮 Other OpenAI-Compatible APIs
+
+You can use any OpenAI-compatible API endpoint:
+
+### LM Studio (Local, Free)
+```json
+{
+  "api_type": "openai-compatible",
+  "api_base": "http://localhost:1234/v1",
+  "openai_model": "your-model-name",
+  "openai_api_key": ""
+}
+```
+
+### OpenRouter (Cloud, Pay-as-you-go)
+```json
+{
+  "api_type": "openai-compatible",
+  "api_base": "https://openrouter.ai/api/v1",
+  "openai_model": "meta-llama/llama-3.1-8b-instruct:free",
+  "openai_api_key": "sk-or-v1-..."
+}
+```
+
+### LocalAI (Self-hosted)
+```json
+{
+  "api_type": "openai-compatible",
+  "api_base": "http://localhost:8080/v1",
+  "openai_model": "your-model",
+  "openai_api_key": ""
+}
+```
+
+## 📝 Known Limitations
+
+- **Single-instance**: Multiple instances can run simultaneously (not yet enforced)
+- **Hotkey conflicts**: If another app uses your hotkey, it won't work
+- **Model restart**: Changing hotkey requires app restart
+
+## 🎯 Recommended Models
+
+### For Ollama (Local, Free)
+
+| Model | Size | RAM | Quality | Best For |
+|-------|------|-----|---------|----------|
+| `llama3.2:3b` | 2GB | 4GB+ | Good | Fast translations, limited resources |
+| `llama3.1:8b` | 5GB | 8GB+ | Better | General use, balanced quality/speed |
+| `qwen2.5:7b` | 4.5GB | 8GB+ | Excellent | Asian languages (Chinese, Japanese, Korean) |
+| `mistral:7b` | 4.1GB | 8GB+ | Good | European languages |
+
+**Installation**:
+```powershell
+ollama pull llama3.2:3b
+```
+
+### For OpenAI API (Paid)
+
+| Model | Speed | Quality | Cost | Best For |
+|-------|-------|---------|------|----------|
+| `gpt-4o-mini` | Fast | Good | Low | Most translations |
+| `gpt-4o` | Medium | Excellent | Medium | Complex texts |
+| `gpt-4-turbo` | Medium | Excellent | High | Professional work |
+
+### For OpenRouter (Pay-as-you-go)
+
+- `meta-llama/llama-3.1-8b-instruct:free` - FREE tier
+- `google/gemini-flash-1.5` - Fast and cheap
+- `anthropic/claude-3.5-sonnet` - Highest quality
+
+## 💡 Tips
+
+- **Start with Ollama `llama3.2:3b`** - It's free, fast, and good enough for most translations
+- **Use GPU** - Ollama automatically uses your GPU if available (much faster)
+- **Adjust model size** - Smaller models are faster but less accurate; larger models are slower but better
+- **Test different models** - Translation quality varies by language pair
+- **Keep Ollama updated** - `ollama version` to check, reinstall to update
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit pull requests or open issues.
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+**Made with ❤️ in Rust** | **Powered by OpenAI API or Ollama** | **100% Free Option Available**

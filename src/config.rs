@@ -10,6 +10,18 @@ pub struct Config {
     pub target_lang: String,
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
+    #[serde(default = "default_api_type")]
+    pub api_type: String,  // "openai", "ollama", "openai-compatible"
+    #[serde(default = "default_api_base")]
+    pub api_base: String,  // Custom API endpoint
+}
+
+fn default_api_type() -> String {
+    "openai".to_string()
+}
+
+fn default_api_base() -> String {
+    "https://api.openai.com/v1".to_string()
 }
 
 fn default_hotkey() -> String {
@@ -23,6 +35,8 @@ impl Default for Config {
             openai_model: "gpt-4o-mini".to_string(),
             target_lang: "English".to_string(),
             hotkey: default_hotkey(),
+            api_type: default_api_type(),
+            api_base: default_api_base(),
         }
     }
 }
