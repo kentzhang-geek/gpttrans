@@ -76,6 +76,7 @@ mod tray {
     pub enum TrayAction {
         Quit,
         OpenSettings,
+        ShowWindow,
     }
 
     impl TrayHandle {
@@ -126,13 +127,14 @@ mod tray {
                     let _ = self.action_tx.send(TrayAction::OpenSettings);
                 }
             }
-            // Non-blocking tray icon click events: show settings on left-click as visible feedback
+            // Non-blocking tray icon click events: show main window on left-click
             while let Ok(event) = self.tray_event_rx.try_recv() {
                 #[allow(unused_variables)]
                 let icon_id = event.id;
                 match event.click_type {
                     tri::ClickType::Left | tri::ClickType::Double => {
-                        let _ = self.action_tx.send(TrayAction::OpenSettings);
+                        let _ = self.action_tx.send(TrayAction::ShowWindow);
+                        crate::logger::log("Tray: Left-click, showing window");
                     }
                     _ => {}
                 }
@@ -345,10 +347,14 @@ fn main() {
                         logger::log("Quit action received");
                         std::process::exit(0);
                     }
-                tray::TrayAction::OpenSettings => {
-                    logger::log("OpenSettings action received");
-                    ui::show_window();
-                }
+                    tray::TrayAction::OpenSettings => {
+                        logger::log("OpenSettings action received");
+                        ui::show_settings();
+                    }
+                    tray::TrayAction::ShowWindow => {
+                        logger::log("ShowWindow action received");
+                        ui::show_translation_window();
+                    }
                 }
             }
         });

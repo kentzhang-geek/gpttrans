@@ -70,12 +70,23 @@ pub fn show_output_text(text: String) {
     if let Ok(mut lt) = LAST_TEXT.lock() { *lt = text.clone(); }
 }
 
-pub fn show_window() {
+pub fn show_settings() {
     ensure_output_thread();
     if let Ok(guard) = OUTPUT_SENDER.lock() {
         if let Some(tx) = guard.as_ref() {
             let _ = tx.send(UiMessage::OpenSettings);
             logger::log("UI: requested open settings");
+        }
+    }
+}
+
+pub fn show_translation_window() {
+    ensure_output_thread();
+    let text = { LAST_TEXT.lock().unwrap().clone() };
+    if let Ok(guard) = OUTPUT_SENDER.lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(UiMessage::ShowText(text));
+            logger::log("UI: requested show translation window");
         }
     }
 }
