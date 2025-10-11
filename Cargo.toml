@@ -2,6 +2,11 @@
 name = "gpttrans"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "A lightweight Windows tray app for translating clipboard text via OpenAI API"
+repository = "https://github.com/kenzhangkentzhang-geek/gpttrans"
+keywords = ["translation", "openai", "clipboard", "tray"]
+categories = ["gui", "command-line-utilities"]
 
 [dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

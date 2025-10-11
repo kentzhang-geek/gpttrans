@@ -63,5 +63,8 @@ Security
 - Your API key is only read from the environment and sent directly to the OpenAI API over HTTPS (rustls). No local persistence is implemented.
 
 Troubleshooting
-- If Alt+F3 doesn’t trigger, another program may already register that hotkey. Try closing conflicting apps or we can add a configurable hotkey.
-- If toasts don’t appear, ensure Windows notifications are enabled for apps.
+- If Alt+F3 doesn't trigger, another program may already register that hotkey. Try closing conflicting apps or we can add a configurable hotkey.
+- If toasts don't appear, ensure Windows notifications are enabled for apps.
+
+License
+This project is licensed under the MIT License - see the LICENSE file for details.
