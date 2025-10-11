@@ -216,26 +216,53 @@ where
 {
     use futures_util::StreamExt;
     
-    // Shorter, optimized system prompt for faster responses
-    let system = format!("Translate to {}. Output only translation.", target_lang);
+    // Optimized prompt for gemma3:270m translation
+    let user_content = if target_lang.to_lowercase().contains("chinese") {
+        format!("Translate '{}' to Chinese, only output the translation, no other text", input)
+    } else if target_lang.to_lowercase().contains("english") {
+        format!("Translate '{}' to English, only output the translation, no other text", input)
+    } else {
+        format!("Translate '{}' to {}, only output the translation, no other text", input, target_lang)
+    };
     let req = ChatRequest {
         model,
         messages: vec![
-            ChatMessage { role: "system", content: &system },
-            ChatMessage { role: "user", content: input },
+            ChatMessage { role: "user", content: &user_content },
         ],
-        temperature: 0.0,
-        max_tokens: Some(2048),
+        temperature: 0.1,  // Slightly higher for small models
+        max_tokens: Some(1024),  // Reduced for small models
         stream: true,  // Enable streaming
     };
 
-    // Build request with appropriate authentication
-    let endpoint = format!("{}/chat/completions", api_base);
-    let mut request_builder = CLIENT.post(&endpoint).json(&req);
+    // Build request with appropriate authentication and endpoint
+    let (endpoint, request_body) = if api_type == "ollama" {
+        // Use native Ollama API format
+        let ollama_endpoint = format!("{}/api/generate", api_base);
+        let ollama_req = serde_json::json!({
+            "model": model,
+            "prompt": user_content,
+            "stream": true
+        });
+        (ollama_endpoint, ollama_req)
+    } else {
+        // Use OpenAI-compatible API format
+        let openai_endpoint = format!("{}/chat/completions", api_base);
+        let openai_req = serde_json::to_value(&req).unwrap();
+        (openai_endpoint, openai_req)
+    };
+    
+    let mut request_builder = CLIENT.post(&endpoint).json(&request_body);
     
     // Add authentication based on API type
     if api_type != "ollama" && !api_key.is_empty() {
         request_builder = request_builder.bearer_auth(api_key);
+    }
+    
+    // Debug logging for Ollama requests
+    if api_type == "ollama" {
+        logger::log(&format!("Ollama native API request to: {}", endpoint));
+        logger::log(&format!("Ollama model: {}", model));
+        logger::log(&format!("User prompt: {}", user_content));
     }
     
     let resp = request_builder.send().await?;
@@ -258,26 +285,41 @@ where
         let buffer_str = String::from_utf8_lossy(&buffer);
         let mut remaining = String::new();
         
-        // Process complete SSE events (lines starting with "data: ")
-        for line in buffer_str.lines() {
-            let line = line.trim();
-            
-            if line.starts_with("data: ") {
-                let json_str = &line[6..];
-                if json_str == "[DONE]" {
-                    break;
-                }
-                
-                // Parse the JSON chunk
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
-                    if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
-                        full_text.push_str(content);
-                        on_chunk(content.to_string());
+        if api_type == "ollama" {
+            // Native Ollama API format - each line is a JSON object
+            for line in buffer_str.lines() {
+                let line = line.trim();
+                if !line.is_empty() {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(content) = parsed["response"].as_str() {
+                            full_text.push_str(content);
+                            on_chunk(content.to_string());
+                        }
                     }
                 }
-            } else if !line.is_empty() && !line.starts_with("data:") {
-                remaining.push_str(line);
-                remaining.push('\n');
+            }
+        } else {
+            // OpenAI-compatible API format - SSE format
+            for line in buffer_str.lines() {
+                let line = line.trim();
+                
+                if line.starts_with("data: ") {
+                    let json_str = &line[6..];
+                    if json_str == "[DONE]" {
+                        break;
+                    }
+                    
+                    // Parse the JSON chunk
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
+                            full_text.push_str(content);
+                            on_chunk(content.to_string());
+                        }
+                    }
+                } else if !line.is_empty() && !line.starts_with("data:") {
+                    remaining.push_str(line);
+                    remaining.push('\n');
+                }
             }
         }
         

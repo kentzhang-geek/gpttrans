@@ -1,9 +1,9 @@
 {
-  "openai_api_key": "sk-REPLACE_WITH_YOUR_KEY",
-  "openai_model": "gpt-4o-mini",
+  "openai_api_key": "",
+  "openai_model": "gemma3:270m",
   "target_lang": "English",
   "hotkey": "Alt+F3",
-  "api_type": "openai",
-  "api_base": "https://api.openai.com/v1"
+  "api_type": "ollama",
+  "api_base": "http://localhost:11434"
 }
 
