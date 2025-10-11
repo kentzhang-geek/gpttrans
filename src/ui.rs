@@ -45,6 +45,8 @@ fn ensure_output_thread() {
             settings_api_type: String::new(),
             settings_api_base: String::new(),
             is_translating: false,
+            selected_api_type: 0,
+            selected_model: 0,
         };
         let native_options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
@@ -140,6 +142,9 @@ struct OutputApp {
     settings_api_type: String,
     settings_api_base: String,
     is_translating: bool,
+    // Dropdown selections
+    selected_api_type: usize,
+    selected_model: usize,
 }
 
 impl eframe::App for OutputApp {
@@ -222,6 +227,18 @@ impl eframe::App for OutputApp {
                                 self.settings_hotkey = cfg.hotkey.clone();
                                 self.settings_api_type = cfg.api_type.clone();
                                 self.settings_api_base = cfg.api_base.clone();
+                                
+                                // Set dropdown selections based on config
+                                self.selected_api_type = match cfg.api_type.as_str() {
+                                    "openai" => 0,
+                                    "ollama" => 1,
+                                    _ => 0,
+                                };
+                                self.selected_model = match (cfg.api_type.as_str(), cfg.openai_model.as_str()) {
+                                    ("openai", "gpt-4o-mini") => 0,
+                                    ("ollama", "gemma3:1b") => 1,
+                                    _ => 0,
+                                };
                             }
                         }
                     }
@@ -378,6 +395,18 @@ impl OutputApp {
                                                 self.settings_hotkey = cfg.hotkey.clone();
                                                 self.settings_api_type = cfg.api_type.clone();
                                                 self.settings_api_base = cfg.api_base.clone();
+                                                
+                                                // Set dropdown selections based on config
+                                                self.selected_api_type = match cfg.api_type.as_str() {
+                                                    "openai" => 0,
+                                                    "ollama" => 1,
+                                                    _ => 0,
+                                                };
+                                                self.selected_model = match (cfg.api_type.as_str(), cfg.openai_model.as_str()) {
+                                                    ("openai", "gpt-4o-mini") => 0,
+                                                    ("ollama", "gemma3:1b") => 1,
+                                                    _ => 0,
+                                                };
                                             }
                                         }
                                     }
@@ -535,14 +564,73 @@ impl OutputApp {
                             
                             ui.add_space(16.0);
                             
-                            // Model
+                            // API Type dropdown
+                            ui.label(egui::RichText::new("API Type")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(180, 190, 210)));
+                            ui.add_space(4.0);
+                            egui::ComboBox::from_id_source("api_type")
+                                .selected_text(if self.selected_api_type == 0 { "OpenAI" } else { "Ollama (Free)" })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.selected_api_type, 0, "OpenAI");
+                                    ui.selectable_value(&mut self.selected_api_type, 1, "Ollama (Free)");
+                                });
+                            
+                            // Update API type and base URL when selection changes
+                            let new_api_type = if self.selected_api_type == 0 { "openai" } else { "ollama" };
+                            if self.settings_api_type != new_api_type {
+                                self.settings_api_type = new_api_type.to_string();
+                                self.settings_api_base = if self.selected_api_type == 0 {
+                                    "https://api.openai.com/v1".to_string()
+                                } else {
+                                    "http://localhost:11434".to_string()
+                                };
+                                // Reset model selection when API type changes
+                                self.selected_model = 0;
+                            }
+                            
+                            ui.add_space(16.0);
+                            
+                            // Model dropdown
                             ui.label(egui::RichText::new("Model")
                                 .size(14.0)
                                 .color(egui::Color32::from_rgb(180, 190, 210)));
                             ui.add_space(4.0);
-                            ui.add(egui::TextEdit::singleline(&mut self.settings_model)
+                            egui::ComboBox::from_id_source("model")
+                                .selected_text(if self.selected_api_type == 0 {
+                                    if self.selected_model == 0 { "GPT-4o Mini" } else { "GPT-4o Mini" }
+                                } else {
+                                    if self.selected_model == 0 { "Gemma3 1B" } else { "Gemma3 1B" }
+                                })
+                                .show_ui(ui, |ui| {
+                                    if self.selected_api_type == 0 {
+                                        ui.selectable_value(&mut self.selected_model, 0, "GPT-4o Mini");
+                                    } else {
+                                        ui.selectable_value(&mut self.selected_model, 0, "Gemma3 1B");
+                                    }
+                                });
+                            
+                            // Update model when selection changes
+                            let new_model = if self.selected_api_type == 0 {
+                                "gpt-4o-mini".to_string()
+                            } else {
+                                "gemma3:1b".to_string()
+                            };
+                            if self.settings_model != new_model {
+                                self.settings_model = new_model;
+                            }
+                            
+                            ui.add_space(16.0);
+                            
+                            // API Base URL (read-only, auto-configured)
+                            ui.label(egui::RichText::new("API Base URL (Auto-configured)")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(180, 190, 210)));
+                            ui.add_space(4.0);
+                            ui.add(egui::TextEdit::singleline(&mut self.settings_api_base)
                                 .desired_width(f32::INFINITY)
-                                .hint_text("gpt-4o-mini"));
+                                .interactive(false)
+                                .hint_text("Automatically set based on API Type"));
                             
                             ui.add_space(16.0);
                             
@@ -568,31 +656,6 @@ impl OutputApp {
                             ui.label(egui::RichText::new("Examples: Alt+F3, Ctrl+Shift+T, Win+Q")
                                 .size(11.0)
                                 .color(egui::Color32::from_rgb(120, 130, 150)));
-                            
-                            ui.add_space(16.0);
-                            
-                            // API Type
-                            ui.label(egui::RichText::new("API Type")
-                                .size(14.0)
-                                .color(egui::Color32::from_rgb(180, 190, 210)));
-                            ui.add_space(4.0);
-                            ui.add(egui::TextEdit::singleline(&mut self.settings_api_type)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("openai, ollama, openai-compatible"));
-                            ui.label(egui::RichText::new("'ollama' = free local AI (no API key needed)")
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(120, 180, 120)));
-                            
-                            ui.add_space(16.0);
-                            
-                            // API Base URL
-                            ui.label(egui::RichText::new("API Base URL")
-                                .size(14.0)
-                                .color(egui::Color32::from_rgb(180, 190, 210)));
-                            ui.add_space(4.0);
-                            ui.add(egui::TextEdit::singleline(&mut self.settings_api_base)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("http://localhost:11434/v1 for Ollama"));
                             
                             ui.add_space(24.0);
                             });
@@ -658,7 +721,7 @@ impl OutputApp {
                                 .color(egui::Color32::from_rgb(100, 110, 130)));
                         });
                 });
-            });
+        });
     }
 }
 
@@ -686,6 +749,8 @@ pub fn run_ui_main_thread() {
         settings_api_type: String::new(),
         settings_api_base: String::new(),
         is_translating: false,
+        selected_api_type: 0,
+        selected_model: 0,
     };
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

@@ -1,7 +1,7 @@
 {
   "openai_api_key": "",
-  "openai_model": "gemma3:270m",
-  "target_lang": "English",
+  "openai_model": "gemma3:1b",
+  "target_lang": "Chinese",
   "hotkey": "Alt+F3",
   "api_type": "ollama",
   "api_base": "http://localhost:11434"
