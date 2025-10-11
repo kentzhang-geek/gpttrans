@@ -18,14 +18,14 @@ mod win_hotkey {
 
     pub const HOTKEY_ID: i32 = 1;
 
-    pub fn spawn_hotkey_listener(tx: std::sync::mpsc::Sender<()>) {
+    pub fn spawn_hotkey_listener(tx: std::sync::mpsc::Sender<()>, modifiers: u32, vk_code: u32, hotkey_str: String) {
         thread::spawn(move || unsafe {
-            let modifiers = km::HOT_KEY_MODIFIERS(km::MOD_ALT.0 as u32);
-            if km::RegisterHotKey(HWND(std::ptr::null_mut()), HOTKEY_ID, modifiers, km::VK_F3.0 as u32).is_err() {
-                crate::logger::log("RegisterHotKey Alt+F3 FAILED (worker thread)");
-                crate::toast("GPTTrans", "Failed to register Alt+F3 hotkey (in use?)");
+            let mods = km::HOT_KEY_MODIFIERS(modifiers);
+            if km::RegisterHotKey(HWND(std::ptr::null_mut()), HOTKEY_ID, mods, vk_code).is_err() {
+                crate::logger::log(&format!("RegisterHotKey {} FAILED (in use?)", hotkey_str));
+                crate::toast("GPTTrans", &format!("Failed to register {} hotkey (in use?)", hotkey_str));
             } else {
-                crate::logger::log("RegisterHotKey Alt+F3 OK (worker thread)");
+                crate::logger::log(&format!("RegisterHotKey {} OK", hotkey_str));
             }
             loop {
                 let mut msg = wm::MSG::default();
@@ -35,14 +35,14 @@ mod win_hotkey {
                     break;
                 }
                 if msg.message == wm::WM_HOTKEY {
-                    crate::logger::log("WM_HOTKEY received (Alt+F3)");
+                    crate::logger::log(&format!("WM_HOTKEY received ({})", hotkey_str));
                     let _ = tx.send(());
                 }
                 let _ = wm::TranslateMessage(&msg);
                 wm::DispatchMessageW(&msg);
             }
             let _ = km::UnregisterHotKey(HWND(std::ptr::null_mut()), HOTKEY_ID);
-            crate::logger::log("UnregisterHotKey Alt+F3");
+            crate::logger::log(&format!("UnregisterHotKey {}", hotkey_str));
         });
     }
 }
@@ -316,13 +316,35 @@ fn main() {
     // Init logger first
     logger::init();
     logger::log("App starting");
+    
+    // Load config early to get hotkey
+    let mut cfg = config::Config::load();
+    logger::log("Config loaded from config.json");
+    if let Ok(v) = std::env::var("OPENAI_API_KEY") { if !v.is_empty() { cfg.openai_api_key = v; } }
+    if let Ok(v) = std::env::var("OPENAI_MODEL") { if !v.is_empty() { cfg.openai_model = v; } }
+    if let Ok(v) = std::env::var("TARGET_LANG") { if !v.is_empty() { cfg.target_lang = v; } }
+    
     // Channels
     let (hotkey_tx, hotkey_rx) = mpsc::channel::<()>();
     let (tray_tx, tray_rx) = mpsc::channel::<tray::TrayAction>();
 
-    // Hotkey listener on worker thread
+    // Hotkey listener on worker thread with configurable hotkey
     logger::log("Spawning hotkey listener thread");
-    win_hotkey::spawn_hotkey_listener(hotkey_tx.clone());
+    #[cfg(windows)]
+    {
+        if let Some((modifiers, vk_code)) = cfg.parse_hotkey() {
+            let hotkey_str = cfg.hotkey.clone();
+            logger::log(&format!("Using hotkey: {}", hotkey_str));
+            win_hotkey::spawn_hotkey_listener(hotkey_tx.clone(), modifiers, vk_code, hotkey_str);
+        } else {
+            logger::log(&format!("Invalid hotkey format: {}, using default Alt+F3", cfg.hotkey));
+            win_hotkey::spawn_hotkey_listener(hotkey_tx.clone(), 0x0001, 0x72, "Alt+F3".to_string());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        win_hotkey::spawn_hotkey_listener(hotkey_tx.clone());
+    }
 
     // Tray icon and pump on dedicated thread (keep non-Send types on one thread)
     {
@@ -364,18 +386,14 @@ fn main() {
 
     // (tray pump handled in dedicated thread above)
 
-    // Config: load from config.json (next to exe). Env vars still override if present.
-    let mut cfg = config::Config::load();
-    logger::log("Config loaded from config.json");
-    if let Ok(v) = std::env::var("OPENAI_API_KEY") { if !v.is_empty() { cfg.openai_api_key = v; } }
-    if let Ok(v) = std::env::var("OPENAI_MODEL") { if !v.is_empty() { cfg.openai_model = v; } }
-    if let Ok(v) = std::env::var("TARGET_LANG") { if !v.is_empty() { cfg.target_lang = v; } }
+    // Wrap config in Arc<Mutex<>> for thread-safe sharing
     let cfg = Arc::new(Mutex::new(cfg));
 
+    let hotkey_display = cfg.lock().unwrap().hotkey.clone();
     if cfg.lock().unwrap().openai_api_key.is_empty() {
         toast("GPTTrans", "Set OPENAI_API_KEY environment variable.");
     } else {
-        toast("GPTTrans", "Ready. Press Alt+F3 to translate clipboard.");
+        toast("GPTTrans", &format!("Ready. Press {} to translate.", hotkey_display));
     }
 
     // Pass config to UI module

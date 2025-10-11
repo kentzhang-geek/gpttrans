@@ -41,6 +41,7 @@ fn ensure_output_thread() {
             settings_api_key: String::new(),
             settings_model: String::new(),
             settings_lang: String::new(),
+            settings_hotkey: String::new(),
             is_translating: false,
         };
         let native_options = eframe::NativeOptions {
@@ -133,6 +134,7 @@ struct OutputApp {
     settings_api_key: String,
     settings_model: String,
     settings_lang: String,
+    settings_hotkey: String,
     is_translating: bool,
 }
 
@@ -184,8 +186,8 @@ impl eframe::App for OutputApp {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 UiMessage::ShowText(new_text) => {
-                    self.text = new_text;
-                    self.need_focus = true;
+            self.text = new_text;
+            self.need_focus = true;
                     self.show_settings = false;
                     self.is_translating = false;
                     logger::log("UI: ShowText message received, will show window");
@@ -213,6 +215,7 @@ impl eframe::App for OutputApp {
                                 self.settings_api_key = cfg.openai_api_key.clone();
                                 self.settings_model = cfg.openai_model.clone();
                                 self.settings_lang = cfg.target_lang.clone();
+                                self.settings_hotkey = cfg.hotkey.clone();
                             }
                         }
                     }
@@ -249,12 +252,32 @@ impl eframe::App for OutputApp {
 
 impl OutputApp {
     fn show_translation_ui(&mut self, ctx: &egui::Context) {
-        // Custom frameless window with rounded corners
+        // Set custom style for better text rendering
+        let mut style = (*ctx.style()).clone();
+        style.spacing.item_spacing = egui::vec2(8.0, 12.0);
+        style.spacing.button_padding = egui::vec2(12.0, 8.0);
+        style.spacing.window_margin = egui::Margin::same(0.0);
+        style.visuals.window_rounding = egui::Rounding::same(12.0);
+        style.visuals.window_shadow = egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 8.0),
+            blur: 24.0,
+            spread: 0.0,
+            color: egui::Color32::from_black_alpha(100),
+        };
+        ctx.set_style(style);
+        
+        // Custom frameless window with rounded corners and gradient
         egui::CentralPanel::default()
             .frame(egui::Frame::none()
-                .fill(egui::Color32::from_rgb(28, 31, 38))
+                .fill(egui::Color32::from_rgb(32, 35, 42))
                 .rounding(egui::Rounding::same(12.0))
-                .inner_margin(egui::Margin::same(0.0)))
+                .inner_margin(egui::Margin::same(0.0))
+                .shadow(egui::epaint::Shadow {
+                    offset: egui::vec2(0.0, 8.0),
+                    blur: 32.0,
+                    spread: 0.0,
+                    color: egui::Color32::from_black_alpha(80),
+                }))
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
                     // Custom title bar with drag area
@@ -270,11 +293,22 @@ impl OutputApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
                     
-                    // Draw custom title bar
+                    // Draw custom title bar with gradient effect
                     ui.painter().rect_filled(
                         title_bar_rect,
                         egui::Rounding { nw: 12.0, ne: 12.0, sw: 0.0, se: 0.0 },
-                        egui::Color32::from_rgb(35, 39, 46),
+                        egui::Color32::from_rgb(42, 46, 54),
+                    );
+                    
+                    // Add subtle gradient line at bottom of title bar
+                    let line_rect = egui::Rect::from_min_max(
+                        egui::pos2(title_bar_rect.min.x + 12.0, title_bar_rect.max.y - 1.0),
+                        egui::pos2(title_bar_rect.max.x - 12.0, title_bar_rect.max.y),
+                    );
+                    ui.painter().rect_filled(
+                        line_rect,
+                        egui::Rounding::ZERO,
+                        egui::Color32::from_rgb(60, 65, 75),
                     );
                     
                     ui.allocate_ui_at_rect(title_bar_rect, |ui| {
@@ -290,13 +324,21 @@ impl OutputApp {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.add_space(8.0);
                                 
-                                // Close button
+                                // Close button with hover effect
                                 let close_btn = ui.add_sized(
                                     [36.0, 36.0],
-                                    egui::Button::new(egui::RichText::new("✕").size(16.0))
+                                    egui::Button::new(egui::RichText::new("✕").size(16.0).color(egui::Color32::from_rgb(200, 200, 210)))
                                         .fill(egui::Color32::TRANSPARENT)
                                         .stroke(egui::Stroke::NONE)
+                                        .rounding(egui::Rounding::same(6.0))
                                 );
+                                if close_btn.hovered() {
+                                    ui.painter().rect_filled(
+                                        close_btn.rect,
+                                        egui::Rounding::same(6.0),
+                                        egui::Color32::from_rgb(239, 68, 68),
+                                    );
+                                }
                                 if close_btn.clicked() {
                                     ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-10000.0, -10000.0)));
                                     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
@@ -304,13 +346,21 @@ impl OutputApp {
                                     logger::log("Output window: hidden by user (moved off-screen)");
                                 }
                                 
-                                // Settings button
+                                // Settings button with hover effect
                                 let settings_btn = ui.add_sized(
                                     [36.0, 36.0],
-                                    egui::Button::new(egui::RichText::new("⚙").size(16.0))
+                                    egui::Button::new(egui::RichText::new("⚙").size(16.0).color(egui::Color32::from_rgb(200, 200, 210)))
                                         .fill(egui::Color32::TRANSPARENT)
                                         .stroke(egui::Stroke::NONE)
+                                        .rounding(egui::Rounding::same(6.0))
                                 );
+                                if settings_btn.hovered() {
+                                    ui.painter().rect_filled(
+                                        settings_btn.rect,
+                                        egui::Rounding::same(6.0),
+                                        egui::Color32::from_rgb(55, 60, 70),
+                                    );
+                                }
                                 if settings_btn.clicked() {
                                     self.show_settings = true;
                                     if let Ok(cfg_guard) = CONFIG.lock() {
@@ -319,41 +369,79 @@ impl OutputApp {
                                                 self.settings_api_key = cfg.openai_api_key.clone();
                                                 self.settings_model = cfg.openai_model.clone();
                                                 self.settings_lang = cfg.target_lang.clone();
+                                                self.settings_hotkey = cfg.hotkey.clone();
                                             }
                                         }
                                     }
                                 }
                                 
-                                // Copy button
+                                // Copy button with hover effect
                                 let copy_btn = ui.add_sized(
                                     [36.0, 36.0],
                                     egui::Button::new(egui::RichText::new("📋").size(16.0))
                                         .fill(egui::Color32::TRANSPARENT)
                                         .stroke(egui::Stroke::NONE)
+                                        .rounding(egui::Rounding::same(6.0))
                                 );
+                                if copy_btn.hovered() {
+                                    ui.painter().rect_filled(
+                                        copy_btn.rect,
+                                        egui::Rounding::same(6.0),
+                                        egui::Color32::from_rgb(55, 60, 70),
+                                    );
+                                }
                                 if copy_btn.clicked() {
                                     let _ = write_clipboard_string(&self.text);
                                     logger::log("Text copied to clipboard");
                                 }
-                            });
-                        });
-                    });
-                    
+                });
+            });
+        });
+
                     ui.add_space(8.0);
                     
-                    // Content area with padding
+                    // Content area with padding and better styling
                     egui::Frame::none()
-                        .inner_margin(egui::Margin::symmetric(16.0, 8.0))
+                        .fill(egui::Color32::from_rgb(40, 43, 50))
+                        .inner_margin(egui::Margin::symmetric(20.0, 16.0))
+                        .rounding(egui::Rounding { nw: 0.0, ne: 0.0, sw: 12.0, se: 12.0 })
                         .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut self.text)
-                                            .desired_rows(20)
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                                    // Custom text style with better line spacing
+                                    let mut layout_job = egui::text::LayoutJob::default();
+                                    layout_job.text = self.text.clone();
+                                    layout_job.wrap = egui::text::TextWrapping {
+                                        max_width: ui.available_width() - 8.0,
+                                        max_rows: 1000,
+                                        break_anywhere: false,
+                                        overflow_character: Some('…'),
+                                    };
+                                    
+                                    // Add all text with custom styling
+                                    layout_job.sections.push(egui::text::LayoutSection {
+                                        leading_space: 0.0,
+                                        byte_range: 0..layout_job.text.len(),
+                                        format: egui::TextFormat {
+                                            font_id: egui::FontId::proportional(16.0),
+                                            color: egui::Color32::from_rgb(220, 225, 235),
+                                            background: egui::Color32::TRANSPARENT,
+                                            italics: false,
+                                            underline: egui::Stroke::NONE,
+                                            strikethrough: egui::Stroke::NONE,
+                                            valign: egui::Align::BOTTOM,
+                                            ..Default::default()
+                                        },
+                                    });
+                                    
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.text)
+                            .desired_rows(20)
                                             .desired_width(f32::INFINITY)
-                                            .font(egui::TextStyle::Body)
-                                            .frame(true)
+                                            .font(egui::FontId::proportional(16.0))
+                                            .frame(false)
+                                            .text_color(egui::Color32::from_rgb(220, 225, 235))
                                     );
                                 });
                         });
@@ -456,6 +544,20 @@ impl OutputApp {
                                 .desired_width(f32::INFINITY)
                                 .hint_text("English"));
                             
+                            ui.add_space(16.0);
+                            
+                            // Hotkey
+                            ui.label(egui::RichText::new("Hotkey (requires restart)")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(180, 190, 210)));
+                            ui.add_space(4.0);
+                            ui.add(egui::TextEdit::singleline(&mut self.settings_hotkey)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("Alt+F3"));
+                            ui.label(egui::RichText::new("Examples: Alt+F3, Ctrl+Shift+T, Win+Q")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(120, 130, 150)));
+                            
                             ui.add_space(24.0);
                             
                             // Buttons
@@ -472,11 +574,12 @@ impl OutputApp {
                                                 cfg.openai_api_key = self.settings_api_key.clone();
                                                 cfg.openai_model = self.settings_model.clone();
                                                 cfg.target_lang = self.settings_lang.clone();
+                                                cfg.hotkey = self.settings_hotkey.clone();
                                                 
                                                 match cfg.save() {
                                                     Ok(_) => {
-                                                        logger::log("Settings saved to config.json");
-                                                        crate::toast("GPTTrans", "Settings saved!");
+                                                        logger::log("Settings saved to config.json (restart to apply hotkey)");
+                                                        crate::toast("GPTTrans", "Saved! Restart to apply hotkey change.");
                                                         self.show_settings = false;
                                                     }
                                                     Err(e) => {
@@ -512,7 +615,7 @@ impl OutputApp {
                                 .color(egui::Color32::from_rgb(100, 110, 130)));
                         });
                 });
-            });
+        });
     }
 }
 
@@ -536,6 +639,7 @@ pub fn run_ui_main_thread() {
         settings_api_key: String::new(),
         settings_model: String::new(),
         settings_lang: String::new(),
+        settings_hotkey: String::new(),
         is_translating: false,
     };
     let native_options = eframe::NativeOptions {

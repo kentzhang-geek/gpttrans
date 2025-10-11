@@ -1,6 +1,7 @@
 {
   "openai_api_key": "sk-REPLACE_WITH_YOUR_KEY",
   "openai_model": "gpt-4o-mini",
-  "target_lang": "English"
+  "target_lang": "English",
+  "hotkey": "Alt+F3"
 }
 
