@@ -8,6 +8,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::thread;
 use std::fs;
+use windows::{
+    Win32::{
+        Foundation::POINT,
+        Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY, GetMonitorInfoW, MONITORINFO},
+        UI::{WindowsAndMessaging::GetCursorPos, HiDpi::{GetDpiForMonitor, MONITOR_DPI_TYPE}},
+    },
+};
 
 static OUTPUT_SENDER: Lazy<Mutex<Option<mpsc::Sender<UiMessage>>>> = Lazy::new(|| Mutex::new(None));
 static LAST_TEXT: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
@@ -15,6 +22,41 @@ static HAS_UPDATED: AtomicBool = AtomicBool::new(false);
 static FONTS_SET: AtomicBool = AtomicBool::new(false);
 static WINDOW_VISIBLE: AtomicBool = AtomicBool::new(false);
 static CONFIG: Lazy<Mutex<Option<Arc<Mutex<Config>>>>> = Lazy::new(|| Mutex::new(None));
+
+/// Get the monitor dimensions and position where the mouse cursor is currently located
+fn get_mouse_monitor_info() -> Option<(f32, f32, f32, f32)> {
+    unsafe {
+        let mut cursor_pos = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut cursor_pos).is_ok() {
+            let monitor = MonitorFromPoint(cursor_pos, MONITOR_DEFAULTTOPRIMARY);
+            if !monitor.is_invalid() {
+                let mut monitor_info = MONITORINFO {
+                    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                    ..Default::default()
+                };
+                let result = GetMonitorInfoW(monitor, &mut monitor_info);
+                if result.as_bool() {
+                    // Use full monitor bounds (rcMonitor) instead of work area (rcWork) for proper centering
+                    let width = monitor_info.rcMonitor.right - monitor_info.rcMonitor.left;
+                    let height = monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top;
+                    let x_offset = monitor_info.rcMonitor.left;
+                    let y_offset = monitor_info.rcMonitor.top;
+                    
+                    // Simple fix: assume 125% scaling and divide coordinates by 1.25
+                    // This converts from logical pixels (Windows API) to egui pixels
+                    let scale_factor = 1.25;
+                    let egui_width = width as f32 / scale_factor;
+                    let egui_height = height as f32 / scale_factor;
+                    let egui_x_offset = x_offset as f32 / scale_factor;
+                    let egui_y_offset = y_offset as f32 / scale_factor;
+                    
+                    return Some((egui_width, egui_height, egui_x_offset, egui_y_offset));
+                }
+            }
+        }
+    }
+    None
+}
 
 enum UiMessage {
     ShowText(String),
@@ -252,13 +294,33 @@ impl eframe::App for OutputApp {
             let was_visible = WINDOW_VISIBLE.load(Ordering::Relaxed);
             logger::log(&format!("UI: Showing window (was_visible={})", was_visible));
             
-            // Restore window size and position to center of screen
+            // Restore window size and position to center of the monitor where mouse cursor is
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(800.0, 560.0)));
-            // Move to center (approximate - let OS position it)
-            if let Some(monitor_size) = ctx.input(|i| i.viewport().monitor_size) {
-                let x = (monitor_size.x - 800.0) / 2.0;
-                let y = (monitor_size.y - 560.0) / 2.0;
-                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x.max(0.0), y.max(0.0))));
+            // Move to center of the monitor where the mouse cursor is located
+            if let Some((monitor_width, monitor_height, x_offset, y_offset)) = get_mouse_monitor_info() {
+                // Calculate center position with safety margins to prevent clipping
+                let window_width = 800.0;
+                let window_height = 560.0;
+                let center_x = x_offset + (monitor_width - window_width) / 2.0;
+                let center_y = y_offset + (monitor_height - window_height) / 2.0;
+                
+                // Ensure the window doesn't go outside the monitor bounds
+                let final_x = center_x.max(x_offset).min(x_offset + monitor_width - window_width);
+                let final_y = center_y.max(y_offset).min(y_offset + monitor_height - window_height);
+                
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(final_x, final_y)));
+                logger::log(&format!("Positioning window on mouse monitor: {}x{} offset({},{}) center({},{}) final({},{}) [Scaled for 125%]", monitor_width, monitor_height, x_offset, y_offset, center_x, center_y, final_x, final_y));
+                
+                // Force a repaint to ensure the position change is applied
+                ctx.request_repaint();
+            } else {
+                // Fallback to default monitor if we can't detect mouse monitor
+                if let Some(monitor_size) = ctx.input(|i| i.viewport().monitor_size) {
+                    let x = (monitor_size.x - 800.0) / 2.0;
+                    let y = (monitor_size.y - 560.0) / 2.0;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x.max(0.0), y.max(0.0))));
+                    logger::log("Positioning window on default monitor (fallback)");
+                }
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             
