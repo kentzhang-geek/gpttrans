@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::thread;
 use std::fs;
+use serde::{Deserialize, Serialize};
 use windows::{
     Win32::{
         Foundation::POINT,
@@ -22,6 +23,47 @@ static HAS_UPDATED: AtomicBool = AtomicBool::new(false);
 static FONTS_SET: AtomicBool = AtomicBool::new(false);
 static WINDOW_VISIBLE: AtomicBool = AtomicBool::new(false);
 static CONFIG: Lazy<Mutex<Option<Arc<Mutex<Config>>>>> = Lazy::new(|| Mutex::new(None));
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OllamaModel {
+    name: String,
+    size: Option<u64>,
+    modified_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaModelsResponse {
+    models: Vec<OllamaModel>,
+}
+
+/// Fetch available models from local Ollama installation
+async fn fetch_ollama_models(api_base: &str) -> Result<Vec<OllamaModel>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    
+    let url = format!("{}/api/tags", api_base);
+    logger::log(&format!("Fetching Ollama models from: {}", url));
+    
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
+    
+    if !response.status().is_success() {
+        return Err(format!("Ollama API returned status: {}", response.status()));
+    }
+    
+    let models_response: OllamaModelsResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Ollama response: {}", e))?;
+    
+    logger::log(&format!("Found {} Ollama models", models_response.models.len()));
+    Ok(models_response.models)
+}
 
 /// Get the monitor dimensions and position where the mouse cursor is currently located
 fn get_mouse_monitor_info() -> Option<(f32, f32, f32, f32)> {
@@ -63,6 +105,8 @@ enum UiMessage {
     OpenSettings,
     AppendText(String),  // For streaming updates
     SetTranslating(bool), // Show/hide loading indicator
+    OllamaModelsLoaded(Vec<OllamaModel>), // Ollama models fetched successfully
+    OllamaModelsError(String), // Error fetching Ollama models
 }
 
 fn ensure_output_thread() {
@@ -89,6 +133,9 @@ fn ensure_output_thread() {
             is_translating: false,
             selected_api_type: 0,
             selected_model: 0,
+            ollama_models: Vec::new(),
+            ollama_models_loading: false,
+            ollama_models_error: None,
         };
         let native_options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
@@ -187,6 +234,10 @@ struct OutputApp {
     // Dropdown selections
     selected_api_type: usize,
     selected_model: usize,
+    // Dynamic Ollama models
+    ollama_models: Vec<OllamaModel>,
+    ollama_models_loading: bool,
+    ollama_models_error: Option<String>,
 }
 
 impl eframe::App for OutputApp {
@@ -276,15 +327,44 @@ impl eframe::App for OutputApp {
                                     "ollama" => 1,
                                     _ => 0,
                                 };
-                                self.selected_model = match (cfg.api_type.as_str(), cfg.openai_model.as_str()) {
-                                    ("openai", "gpt-4o-mini") => 0,
-                                    ("ollama", "gemma3:1b") => 0,
-                                    ("ollama", "gemma3:270m") => 1,
-                                    _ => 0,
-                                };
+                                
+                                // Load Ollama models if API type is Ollama
+                                if self.selected_api_type == 1 {
+                                    self.load_ollama_models();
+                                }
+                                
+                                // Set model selection based on config
+                                if self.selected_api_type == 0 {
+                                    self.selected_model = 0; // OpenAI always has one model
+                                } else {
+                                    // For Ollama, we'll set the model index after models are loaded
+                                    self.selected_model = 0; // Default to first model
+                                }
                             }
                         }
                     }
+                }
+                UiMessage::OllamaModelsLoaded(models) => {
+                    self.ollama_models = models;
+                    self.ollama_models_loading = false;
+                    self.ollama_models_error = None;
+                    logger::log(&format!("UI: Loaded {} Ollama models", self.ollama_models.len()));
+                    
+                    // Try to find the currently selected model in the loaded models
+                    if let Ok(cfg_guard) = CONFIG.lock() {
+                        if let Some(cfg_arc) = cfg_guard.as_ref() {
+                            if let Ok(cfg) = cfg_arc.lock() {
+                                if let Some(index) = self.ollama_models.iter().position(|m| m.name == cfg.openai_model) {
+                                    self.selected_model = index;
+                                }
+                            }
+                        }
+                    }
+                }
+                UiMessage::OllamaModelsError(error) => {
+                    self.ollama_models_loading = false;
+                    self.ollama_models_error = Some(error);
+                    logger::log("UI: Failed to load Ollama models");
                 }
             }
         }
@@ -337,6 +417,39 @@ impl eframe::App for OutputApp {
 }
 
 impl OutputApp {
+    fn load_ollama_models(&mut self) {
+        if self.ollama_models_loading {
+            return; // Already loading
+        }
+        
+        self.ollama_models_loading = true;
+        self.ollama_models_error = None;
+        
+        let api_base = self.settings_api_base.clone();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        
+        // Spawn async task to fetch models
+        std::thread::spawn(move || {
+            let models = rt.block_on(async {
+                fetch_ollama_models(&api_base).await
+            });
+            
+            // Send result back to UI thread
+            if let Ok(guard) = OUTPUT_SENDER.lock() {
+                if let Some(tx) = guard.as_ref() {
+                    match models {
+                        Ok(models) => {
+                            let _ = tx.send(UiMessage::OllamaModelsLoaded(models));
+                        }
+                        Err(error) => {
+                            let _ = tx.send(UiMessage::OllamaModelsError(error));
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     fn show_translation_ui(&mut self, ctx: &egui::Context) {
         // Set custom style for better text rendering
         let mut style = (*ctx.style()).clone();
@@ -651,6 +764,11 @@ impl OutputApp {
                                 };
                                 // Reset model selection when API type changes
                                 self.selected_model = 0;
+                                
+                                // Load Ollama models if switching to Ollama
+                                if self.selected_api_type == 1 {
+                                    self.load_ollama_models();
+                                }
                             }
                             
                             ui.add_space(16.0);
@@ -660,33 +778,56 @@ impl OutputApp {
                                 .size(14.0)
                                 .color(egui::Color32::from_rgb(180, 190, 210)));
                             ui.add_space(4.0);
-                            egui::ComboBox::from_id_source("model")
-                                .selected_text(if self.selected_api_type == 0 {
-                                    "GPT-4o Mini"
-                                } else {
-                                    match self.selected_model {
-                                        0 => "Gemma3 1B",
-                                        1 => "Gemma3 270M",
-                                        _ => "Gemma3 1B",
-                                    }
-                                })
-                                .show_ui(ui, |ui| {
-                                    if self.selected_api_type == 0 {
+                            
+                            if self.selected_api_type == 0 {
+                                // OpenAI models (static)
+                                egui::ComboBox::from_id_source("model")
+                                    .selected_text("GPT-4o Mini")
+                                    .show_ui(ui, |ui| {
                                         ui.selectable_value(&mut self.selected_model, 0, "GPT-4o Mini");
-                                    } else {
-                                        ui.selectable_value(&mut self.selected_model, 0, "Gemma3 1B");
-                                        ui.selectable_value(&mut self.selected_model, 1, "Gemma3 270M");
+                                    });
+                            } else {
+                                // Ollama models (dynamic)
+                                if self.ollama_models_loading {
+                                    ui.label(egui::RichText::new("Loading models...")
+                                        .color(egui::Color32::from_rgb(150, 160, 180)));
+                                } else if let Some(ref error) = self.ollama_models_error {
+                                    ui.label(egui::RichText::new(&format!("Error: {}", error))
+                                        .color(egui::Color32::from_rgb(255, 100, 100)));
+                                    if ui.button("🔄 Retry").clicked() {
+                                        self.load_ollama_models();
                                     }
-                                });
+                                } else if self.ollama_models.is_empty() {
+                                    ui.label(egui::RichText::new("No models found")
+                                        .color(egui::Color32::from_rgb(150, 160, 180)));
+                                    if ui.button("🔄 Refresh").clicked() {
+                                        self.load_ollama_models();
+                                    }
+                                } else {
+                                    let selected_text = if self.selected_model < self.ollama_models.len() {
+                                        &self.ollama_models[self.selected_model].name
+                                    } else {
+                                        "Select a model"
+                                    };
+                                    
+                                    egui::ComboBox::from_id_source("model")
+                                        .selected_text(selected_text)
+                                        .show_ui(ui, |ui| {
+                                            for (i, model) in self.ollama_models.iter().enumerate() {
+                                                ui.selectable_value(&mut self.selected_model, i, &model.name);
+                                            }
+                                        });
+                                }
+                            }
                             
                             // Update model when selection changes
                             let new_model = if self.selected_api_type == 0 {
                                 "gpt-4o-mini".to_string()
                             } else {
-                                match self.selected_model {
-                                    0 => "gemma3:1b".to_string(),
-                                    1 => "gemma3:270m".to_string(),
-                                    _ => "gemma3:1b".to_string(),
+                                if self.selected_model < self.ollama_models.len() {
+                                    self.ollama_models[self.selected_model].name.clone()
+                                } else {
+                                    "gemma3:1b".to_string() // fallback
                                 }
                             };
                             if self.settings_model != new_model {
@@ -824,6 +965,9 @@ pub fn run_ui_main_thread() {
         is_translating: false,
         selected_api_type: 0,
         selected_model: 0,
+        ollama_models: Vec::new(),
+        ollama_models_loading: false,
+        ollama_models_error: None,
     };
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
