@@ -160,9 +160,31 @@ struct ChatRequest<'a> {
 }
 
 #[derive(serde::Serialize)]
+#[serde(untagged)]
+enum MessageContent<'a> {
+    Text(&'a str),
+    List(Vec<ContentPart<'a>>),
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum ContentPart<'a> {
+    Text { text: &'a str },
+    ImageUrl { image_url: ImageUrl<'a> },
+}
+
+#[derive(serde::Serialize)]
+struct ImageUrl<'a> {
+    url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<&'a str>,
+}
+
+#[derive(serde::Serialize)]
 struct ChatMessage<'a> {
     role: &'a str,
-    content: &'a str,
+    content: MessageContent<'a>,
 }
 
 #[derive(serde::Deserialize)]
@@ -183,12 +205,115 @@ struct ChoiceMessage {
 fn read_clipboard_string() -> Option<String> {
     #[cfg(windows)]
     {
-        clipboard_win::get_clipboard_string().ok()
+        use std::thread;
+        use std::time::Duration;
+        
+        for i in 0..3 {
+            match clipboard_win::get_clipboard_string() {
+                Ok(s) => return Some(s),
+                Err(e) => {
+                    // 5 = Access Denied, common if clipboard is locked
+                    crate::logger::log(&format!("Try {}: Failed to read clipboard string: {:?}", i+1, e));
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        None
     }
     #[cfg(not(windows))]
     {
         None
     }
+}
+
+pub struct ImageData {
+    pub bytes: Vec<u8>,
+    pub mime_type: String,
+}
+
+fn read_clipboard_image() -> Option<ImageData> {
+    #[cfg(windows)]
+    {
+        use clipboard_win::{formats, get_clipboard};
+        use std::thread;
+        use std::time::Duration;
+        
+        for i in 0..3 {
+            match get_clipboard(formats::Bitmap) {
+                Ok(buffer) => {
+                    let buffer: Vec<u8> = buffer;
+                    // formats::Bitmap in clipboard-win refers to CF_DIB (Device Independent Bitmap)
+                    match load_dib(&buffer) {
+                        Ok(img) => {
+                            let mut png_bytes = std::io::Cursor::new(Vec::new());
+                            if img.write_to(&mut png_bytes, image::ImageFormat::Png).is_ok() {
+                                return Some(ImageData {
+                                    bytes: png_bytes.into_inner(),
+                                    mime_type: "image/png".to_string(),
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            crate::logger::log(&format!("Failed to load DIB from clipboard: {:?}", e));
+                        }
+                    }
+                    break; // If we got a buffer but failed to parse, retrying likely won't help much unless it was a partial read
+                }
+                Err(e) => {
+                    crate::logger::log(&format!("Try {}: get_clipboard(Bitmap) failed: {:?}", i+1, e));
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn load_dib(buffer: &[u8]) -> anyhow::Result<image::DynamicImage> {
+    // DIB (Device Independent Bitmap) 
+    // Usually it's BITMAPINFOHEADER followed by color table (optional) and then bits.
+    // For GPT-4o we just need a standard image format like PNG/JPEG.
+    // 'image' crate doesn't directly support DIB, so we might need some manual parsing or use 'bmp' format if it matches.
+    // Actually, a DIB is essentially a BMP without the 14-byte File Header.
+    
+    let mut bmp_data = Vec::with_capacity(buffer.len() + 14);
+    let size = (buffer.len() + 14) as u32;
+    
+    // BMP File Header
+    bmp_data.extend_from_slice(b"BM");
+    bmp_data.extend_from_slice(&size.to_le_bytes());
+    bmp_data.extend_from_slice(&[0, 0, 0, 0]); // Reserved
+    
+    // Offset to pixel data. For DIB, it depends on the header size.
+    // BITMAPINFOHEADER is usually 40 bytes.
+    if buffer.len() < 4 {
+        anyhow::bail!("DIB too short");
+    }
+    let header_size = u32::from_le_bytes(buffer[0..4].try_into()?);
+    let mut offset = 14 + header_size;
+    
+    // If it has a color table (for 8-bit or less), we need to account for it.
+    // But for screenshots it's usually 24 or 32 bit.
+    if header_size >= 16 {
+        let bit_count = u16::from_le_bytes(buffer[14..16].try_into()?);
+        if bit_count <= 8 {
+            let mut clr_used = u32::from_le_bytes(buffer[32..36].try_into()?);
+            if clr_used == 0 {
+                clr_used = 1 << bit_count;
+            }
+            offset += clr_used * 4;
+        }
+    }
+
+    bmp_data.extend_from_slice(&offset.to_le_bytes());
+    bmp_data.extend_from_slice(buffer);
+    
+    Ok(image::load_from_memory_with_format(&bmp_data, image::ImageFormat::Bmp)?)
 }
 
 pub(crate) fn write_clipboard_string(s: &str) -> bool {
@@ -204,6 +329,7 @@ pub(crate) fn write_clipboard_string(s: &str) -> bool {
 
 async fn translate_via_openai_stream<F>(
     input: &str, 
+    image_data: Option<ImageData>,
     target_lang: &str, 
     api_key: &str, 
     model: &str, 
@@ -215,34 +341,82 @@ where
     F: FnMut(String),
 {
     use futures_util::StreamExt;
+    use base64::{Engine as _, engine::general_purpose};
     
     // Optimized prompt for gemma3:270m translation
     let user_content = if target_lang.to_lowercase().contains("chinese") {
-        format!("Translate '{}' to Chinese, only output the translation, no other text", input)
+        if image_data.is_some() {
+            "Translate the text in this image to Chinese, only output the translation, no other text".to_string()
+        } else {
+            format!("Translate '{}' to Chinese, only output the translation, no other text", input)
+        }
     } else if target_lang.to_lowercase().contains("english") {
-        format!("Translate '{}' to English, only output the translation, no other text", input)
+        if image_data.is_some() {
+            "Translate the text in this image to English, only output the translation, no other text".to_string()
+        } else {
+            format!("Translate '{}' to English, only output the translation, no other text", input)
+        }
     } else {
-        format!("Translate '{}' to {}, only output the translation, no other text", input, target_lang)
+        if image_data.is_some() {
+            format!("Translate the text in this image to {}, only output the translation, no other text", target_lang)
+        } else {
+            format!("Translate '{}' to {}, only output the translation, no other text", input, target_lang)
+        }
     };
+
+    let mut messages = Vec::new();
+    if let Some(img) = image_data {
+        let b64 = general_purpose::STANDARD.encode(&img.bytes);
+        let data_url = format!("data:{};base64,{}", img.mime_type, b64);
+        messages.push(ChatMessage {
+            role: "user",
+            content: MessageContent::List(vec![
+                ContentPart::Text { text: &user_content },
+                ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: data_url,
+                        detail: Some("high"),
+                    },
+                },
+            ]),
+        });
+    } else {
+        messages.push(ChatMessage {
+            role: "user",
+            content: MessageContent::Text(&user_content),
+        });
+    }
+
     let req = ChatRequest {
         model,
-        messages: vec![
-            ChatMessage { role: "user", content: &user_content },
-        ],
-        temperature: 0.1,  // Slightly higher for small models
-        max_tokens: Some(1024),  // Reduced for small models
-        stream: true,  // Enable streaming
+        messages,
+        temperature: 0.1,
+        max_tokens: Some(1024),
+        stream: true,
     };
 
     // Build request with appropriate authentication and endpoint
     let (endpoint, request_body) = if api_type == "ollama" {
         // Use native Ollama API format
         let ollama_endpoint = format!("{}/api/generate", api_base);
-        let ollama_req = serde_json::json!({
+        
+        let mut ollama_req = serde_json::json!({
             "model": model,
             "prompt": user_content,
             "stream": true
         });
+
+        if let MessageContent::List(ref list) = req.messages[0].content {
+            for part in list {
+                if let ContentPart::ImageUrl { image_url } = part {
+                    // Extract base64 from data URL
+                    if let Some(b64) = image_url.url.split(',').last() {
+                        ollama_req["images"] = serde_json::json!([b64]);
+                    }
+                }
+            }
+        }
+
         (ollama_endpoint, ollama_req)
     } else {
         // Use OpenAI-compatible API format
@@ -490,21 +664,33 @@ fn main() {
                 if api_type != "ollama" && api_key.is_empty() {
                     toast("GPTTrans", "Missing API key. Configure in settings.");
                     logger::log("Hotkey: Missing API key");
-                } else if let Some(text) = read_clipboard_string() {
-                    if text.trim().is_empty() {
+                } else {
+                    // Small delay to let the source application release the clipboard
+                    // Especially important when triggered via hotkey
+                    thread::sleep(Duration::from_millis(150));
+
+                    let image = read_clipboard_image();
+                    let text = read_clipboard_string();
+                    
+                    if image.is_none() && text.as_ref().map_or(true, |s| s.trim().is_empty()) {
                         toast("GPTTrans", "Clipboard is empty.");
                         logger::log("Hotkey: Clipboard empty");
                     } else {
                         // Show window immediately with loading indicator
                         ui::set_translating(true);
                         toast("GPTTrans", "Translating...");
-                        logger::log(&format!("Translating {} chars with {} ({}) to {}", text.len(), model, api_type, target_lang));
+                        
+                        let input_text = text.unwrap_or_default();
+                        let has_image = image.is_some();
+                        
+                        logger::log(&format!("Translating (image: {}, text len: {}) with {} ({}) to {}", 
+                            has_image, input_text.len(), model, api_type, target_lang));
                         
                         let res = rt.block_on(async move {
                             // Clear text and start fresh
                             ui::show_output_text(String::new());
                             
-                            translate_via_openai_stream(&text, &target_lang, &api_key, &model, &api_base, &api_type, |chunk| {
+                            translate_via_openai_stream(&input_text, image, &target_lang, &api_key, &model, &api_base, &api_type, |chunk| {
                                 // Stream each chunk to the UI as it arrives
                                 ui::append_text(chunk);
                             }).await
@@ -530,9 +716,6 @@ fn main() {
                             }
                         }
                     }
-                } else {
-                    toast("GPTTrans", "Failed to read clipboard.");
-                    logger::log("Hotkey: Failed to read clipboard");
                 }
             }
         });
