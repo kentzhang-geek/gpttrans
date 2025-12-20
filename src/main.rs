@@ -208,12 +208,21 @@ fn read_clipboard_string() -> Option<String> {
         use std::thread;
         use std::time::Duration;
         
+        if !clipboard_win::is_format_avail(clipboard_win::formats::Unicode.into()) {
+            return None;
+        }
+
         for i in 0..3 {
             match clipboard_win::get_clipboard_string() {
                 Ok(s) => return Some(s),
                 Err(e) => {
-                    // 5 = Access Denied, common if clipboard is locked
-                    crate::logger::log(&format!("Try {}: Failed to read clipboard string: {:?}", i+1, e));
+                    let err_code = e.raw_code();
+                    if err_code == 5 { // Access Denied
+                        crate::logger::log(&format!("Try {}: Clipboard locked (Access Denied)", i+1));
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    crate::logger::log(&format!("Try {}: Failed to read clipboard string: {} (code: {})", i+1, e, err_code));
                     thread::sleep(Duration::from_millis(100));
                 }
             }
@@ -234,10 +243,14 @@ pub struct ImageData {
 fn read_clipboard_image() -> Option<ImageData> {
     #[cfg(windows)]
     {
-        use clipboard_win::{formats, get_clipboard};
+        use clipboard_win::{formats, get_clipboard, is_format_avail};
         use std::thread;
         use std::time::Duration;
         
+        if !is_format_avail(formats::Bitmap.into()) {
+            return None;
+        }
+
         for i in 0..3 {
             match get_clipboard(formats::Bitmap) {
                 Ok(buffer) => {
@@ -254,13 +267,19 @@ fn read_clipboard_image() -> Option<ImageData> {
                             }
                         }
                         Err(e) => {
-                            crate::logger::log(&format!("Failed to load DIB from clipboard: {:?}", e));
+                            crate::logger::log(&format!("Failed to load DIB from clipboard: {}", e));
                         }
                     }
-                    break; // If we got a buffer but failed to parse, retrying likely won't help much unless it was a partial read
+                    break; // If we got a buffer but failed to parse, retrying likely won't help much
                 }
                 Err(e) => {
-                    crate::logger::log(&format!("Try {}: get_clipboard(Bitmap) failed: {:?}", i+1, e));
+                    let err_code = e.raw_code();
+                    if err_code == 5 { // Access Denied
+                        crate::logger::log(&format!("Try {}: get_clipboard(Bitmap) locked (Access Denied)", i+1));
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    crate::logger::log(&format!("Try {}: get_clipboard(Bitmap) failed: {} (code: {})", i+1, e, err_code));
                     thread::sleep(Duration::from_millis(100));
                 }
             }
@@ -277,36 +296,54 @@ fn read_clipboard_image() -> Option<ImageData> {
 fn load_dib(buffer: &[u8]) -> anyhow::Result<image::DynamicImage> {
     // DIB (Device Independent Bitmap) 
     // Usually it's BITMAPINFOHEADER followed by color table (optional) and then bits.
-    // For GPT-4o we just need a standard image format like PNG/JPEG.
-    // 'image' crate doesn't directly support DIB, so we might need some manual parsing or use 'bmp' format if it matches.
     // Actually, a DIB is essentially a BMP without the 14-byte File Header.
     
+    if buffer.len() < 4 {
+        anyhow::bail!("DIB too short ({} bytes)", buffer.len());
+    }
+
+    // Check if it's already a full BMP file (some apps or clipboard-win versions might return it this way)
+    if buffer.starts_with(b"BM") {
+        return Ok(image::load_from_memory_with_format(buffer, image::ImageFormat::Bmp)?);
+    }
+
+    let header_size = u32::from_le_bytes(buffer[0..4].try_into()?);
+    
+    // Validate header size. Standard sizes are 40 (V1/INFO), 108 (V4), 124 (V5), 12 (CORE)
+    if header_size != 40 && header_size != 108 && header_size != 124 && header_size != 12 && header_size != 64 {
+        let hex_prefix: String = buffer.iter().take(16).map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+        anyhow::bail!("Unsupported or invalid DIB header size: {} (Prefix: {})", header_size, hex_prefix);
+    }
+
     let mut bmp_data = Vec::with_capacity(buffer.len() + 14);
-    let size = (buffer.len() + 14) as u32;
+    let total_size = (buffer.len() + 14) as u32;
     
     // BMP File Header
     bmp_data.extend_from_slice(b"BM");
-    bmp_data.extend_from_slice(&size.to_le_bytes());
+    bmp_data.extend_from_slice(&total_size.to_le_bytes());
     bmp_data.extend_from_slice(&[0, 0, 0, 0]); // Reserved
     
-    // Offset to pixel data. For DIB, it depends on the header size.
-    // BITMAPINFOHEADER is usually 40 bytes.
-    if buffer.len() < 4 {
-        anyhow::bail!("DIB too short");
-    }
-    let header_size = u32::from_le_bytes(buffer[0..4].try_into()?);
+    // Offset to pixel data. For DIB, it depends on the header size and color table.
     let mut offset = 14 + header_size;
     
-    // If it has a color table (for 8-bit or less), we need to account for it.
-    // But for screenshots it's usually 24 or 32 bit.
     if header_size >= 16 {
         let bit_count = u16::from_le_bytes(buffer[14..16].try_into()?);
         if bit_count <= 8 {
-            let mut clr_used = u32::from_le_bytes(buffer[32..36].try_into()?);
-            if clr_used == 0 {
-                clr_used = 1 << bit_count;
-            }
-            offset += clr_used * 4;
+            let clr_used = if header_size >= 36 {
+                u32::from_le_bytes(buffer[32..36].try_into()?)
+            } else { 0 };
+            
+            let num_colors = if clr_used == 0 {
+                1 << bit_count
+            } else {
+                clr_used
+            };
+            offset += num_colors * 4;
+        }
+    } else if header_size == 12 { // BITMAPCOREHEADER
+        let bit_count = u16::from_le_bytes(buffer[10..12].try_into()?);
+        if bit_count <= 8 {
+            offset += (1 << bit_count) * 3; // RGBTriple instead of RGBQuad
         }
     }
 
