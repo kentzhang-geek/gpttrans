@@ -77,6 +77,7 @@ mod tray {
         Quit,
         OpenSettings,
         ShowWindow,
+        Translate,
     }
 
     impl TrayHandle {
@@ -133,8 +134,8 @@ mod tray {
                 let icon_id = event.id;
                 match event.click_type {
                     tri::ClickType::Left | tri::ClickType::Double => {
-                        let _ = self.action_tx.send(TrayAction::ShowWindow);
-                        crate::logger::log("Tray: Left-click, showing window");
+                        let _ = self.action_tx.send(TrayAction::Translate);
+                        crate::logger::log("Tray: Left-click, triggering translation");
                     }
                     _ => {}
                 }
@@ -672,6 +673,7 @@ fn main() {
 
     // Background: tray actions
     {
+        let hotkey_tx_for_tray = hotkey_tx.clone();
         thread::spawn(move || {
             while let Ok(act) = tray_rx.recv() {
                 match act {
@@ -686,6 +688,10 @@ fn main() {
                     tray::TrayAction::ShowWindow => {
                         logger::log("ShowWindow action received");
                         ui::show_translation_window();
+                    }
+                    tray::TrayAction::Translate => {
+                        logger::log("Translate action received (from tray)");
+                        let _ = hotkey_tx_for_tray.send(());
                     }
                 }
             }
