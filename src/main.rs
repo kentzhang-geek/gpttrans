@@ -481,6 +481,12 @@ where
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
+        
+        // Handle common Ollama error for non-vision models
+        if api_type == "ollama" && status == 500 && text.contains("missing data required for image input") {
+            anyhow::bail!("Ollama error: The model '{}' does not support images. Please use a vision model like 'llava'.", model);
+        }
+        
         anyhow::bail!("API error {}: {}", status, text);
     }
 
