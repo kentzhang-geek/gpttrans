@@ -580,7 +580,7 @@ impl OutputApp {
                     );
                     
                     ui.allocate_ui_at_rect(title_bar_rect, |ui| {
-                        ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.add_space(16.0);
                             
                             // Left-aligned Title
