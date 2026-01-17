@@ -531,21 +531,23 @@ impl OutputApp {
                                 ui.add_space(8.0);
                                 
                                 // Close button with hover effect
-                                let close_btn = ui.add_sized(
-                                    [36.0, 36.0],
-                                    egui::Button::new(egui::RichText::new(egui_phosphor::regular::X).size(16.0).color(egui::Color32::from_rgb(200, 200, 210)))
-                                        .fill(egui::Color32::TRANSPARENT)
-                                        .stroke(egui::Stroke::NONE)
-                                        .rounding(egui::Rounding::same(6.0))
-                                );
-                                if close_btn.hovered() {
+                                let close_btn_size = egui::vec2(36.0, 36.0);
+                                let (close_rect, close_resp) = ui.allocate_at_least(close_btn_size, egui::Sense::click());
+                                if close_resp.hovered() {
                                     ui.painter().rect_filled(
-                                        close_btn.rect,
+                                        close_rect,
                                         egui::Rounding::same(6.0),
                                         egui::Color32::from_rgb(239, 68, 68),
                                     );
                                 }
-                                if close_btn.clicked() {
+                                ui.painter().text(
+                                    close_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    egui_phosphor::regular::X,
+                                    egui::FontId::proportional(16.0),
+                                    if close_resp.hovered() { egui::Color32::WHITE } else { egui::Color32::from_rgb(200, 200, 210) },
+                                );
+                                if close_resp.clicked() {
                                     ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-10000.0, -10000.0)));
                                     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
                                     WINDOW_VISIBLE.store(false, Ordering::Relaxed);
@@ -553,21 +555,23 @@ impl OutputApp {
                                 }
                                 
                                 // Settings button with hover effect
-                                let settings_btn = ui.add_sized(
-                                    [36.0, 36.0],
-                                    egui::Button::new(egui::RichText::new(egui_phosphor::regular::GEAR).size(16.0).color(egui::Color32::from_rgb(200, 200, 210)))
-                                        .fill(egui::Color32::TRANSPARENT)
-                                        .stroke(egui::Stroke::NONE)
-                                        .rounding(egui::Rounding::same(6.0))
-                                );
-                                if settings_btn.hovered() {
+                                let settings_btn_size = egui::vec2(36.0, 36.0);
+                                let (settings_rect, settings_resp) = ui.allocate_at_least(settings_btn_size, egui::Sense::click());
+                                if settings_resp.hovered() {
                                     ui.painter().rect_filled(
-                                        settings_btn.rect,
+                                        settings_rect,
                                         egui::Rounding::same(6.0),
                                         egui::Color32::from_rgb(55, 60, 70),
                                     );
                                 }
-                                if settings_btn.clicked() {
+                                ui.painter().text(
+                                    settings_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    egui_phosphor::regular::GEAR,
+                                    egui::FontId::proportional(16.0),
+                                    if settings_resp.hovered() { egui::Color32::WHITE } else { egui::Color32::from_rgb(200, 200, 210) },
+                                );
+                                if settings_resp.clicked() {
                                     self.show_settings = true;
                                     if let Ok(cfg_guard) = CONFIG.lock() {
                                         if let Some(cfg_arc) = cfg_guard.as_ref() {
@@ -597,21 +601,23 @@ impl OutputApp {
                                 }
                                 
                                 // Copy button with hover effect
-                                let copy_btn = ui.add_sized(
-                                    [36.0, 36.0],
-                                    egui::Button::new(egui::RichText::new(egui_phosphor::regular::CLIPBOARD_TEXT).size(16.0))
-                                        .fill(egui::Color32::TRANSPARENT)
-                                        .stroke(egui::Stroke::NONE)
-                                        .rounding(egui::Rounding::same(6.0))
-                                );
-                                if copy_btn.hovered() {
+                                let copy_btn_size = egui::vec2(36.0, 36.0);
+                                let (copy_rect, copy_resp) = ui.allocate_at_least(copy_btn_size, egui::Sense::click());
+                                if copy_resp.hovered() {
                                     ui.painter().rect_filled(
-                                        copy_btn.rect,
+                                        copy_rect,
                                         egui::Rounding::same(6.0),
                                         egui::Color32::from_rgb(55, 60, 70),
                                     );
                                 }
-                                if copy_btn.clicked() {
+                                ui.painter().text(
+                                    copy_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    egui_phosphor::regular::CLIPBOARD_TEXT,
+                                    egui::FontId::proportional(16.0),
+                                    if copy_resp.hovered() { egui::Color32::WHITE } else { egui::Color32::from_rgb(200, 200, 210) }, // Use default color for icon locally if needed
+                                );
+                                if copy_resp.clicked() {
                         let _ = write_clipboard_string(&self.text);
                                     logger::log("Text copied to clipboard");
                     }
