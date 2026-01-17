@@ -666,27 +666,33 @@ impl OutputApp {
 
                                 // API Switcher Combo Box
                                 let combo_width = 110.0;
-                                egui::ComboBox::from_id_source("title_api_switcher")
-                                    .width(combo_width)
-                                    .selected_text(match self.selected_api_type {
-                                        0 => "OpenAI",
-                                        1 => "Ollama",
-                                        2 => "Google",
-                                        _ => "OpenAI"
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        let mut changed = false;
-                                        if ui.selectable_value(&mut self.selected_api_type, 0, "OpenAI").clicked() { changed = true; }
-                                        if ui.selectable_value(&mut self.selected_api_type, 1, "Ollama").clicked() { changed = true; }
-                                        if ui.selectable_value(&mut self.selected_api_type, 2, "Google").clicked() { changed = true; }
-                                        
-                                        if changed {
-                                            if self.selected_api_type == 1 {
-                                                self.load_ollama_models();
-                                            }
-                                            self.save_to_config();
-                                        }
-                                    });
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(combo_width, 36.0),
+                                    egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                                    |ui| {
+                                        egui::ComboBox::from_id_source("title_api_switcher")
+                                            .width(combo_width)
+                                            .selected_text(match self.selected_api_type {
+                                                0 => "OpenAI",
+                                                1 => "Ollama",
+                                                2 => "Google",
+                                                _ => "OpenAI"
+                                            })
+                                            .show_ui(ui, |ui| {
+                                                let mut changed = false;
+                                                if ui.selectable_value(&mut self.selected_api_type, 0, "OpenAI").clicked() { changed = true; }
+                                                if ui.selectable_value(&mut self.selected_api_type, 1, "Ollama").clicked() { changed = true; }
+                                                if ui.selectable_value(&mut self.selected_api_type, 2, "Google").clicked() { changed = true; }
+                                                
+                                                if changed {
+                                                    if self.selected_api_type == 1 {
+                                                        self.load_ollama_models();
+                                                    }
+                                                    self.save_to_config();
+                                                }
+                                            });
+                                    }
+                                );
                             });
                         });
                     });
