@@ -274,13 +274,20 @@ impl eframe::App for OutputApp {
             }
             if let Some(bytes) = loaded {
                 let mut fonts = egui::FontDefinitions::default();
+                // Add Phosphor icons first so they don't get overwritten
+                egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+
                 fonts.font_data.insert("cjk".to_owned(), egui::FontData::from_owned(bytes));
                 fonts.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "cjk".to_owned());
                 fonts.families.entry(egui::FontFamily::Monospace).or_default().insert(0, "cjk".to_owned());
                 ctx.set_fonts(fonts);
-                logger::log("Applied CJK font to egui");
+                logger::log("Applied CJK font and Phosphor icons to egui");
             } else {
-                logger::log("No CJK font found; text may render as squares");
+                // Even if no CJK font, we still want icons
+                let mut fonts = egui::FontDefinitions::default();
+                egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+                ctx.set_fonts(fonts);
+                logger::log("Applied Phosphor icons (no CJK font found)");
             }
         }
         
@@ -526,7 +533,7 @@ impl OutputApp {
                                 // Close button with hover effect
                                 let close_btn = ui.add_sized(
                                     [36.0, 36.0],
-                                    egui::Button::new(egui::RichText::new("✕").size(16.0).color(egui::Color32::from_rgb(200, 200, 210)))
+                                    egui::Button::new(egui::RichText::new(egui_phosphor::regular::X).size(16.0).color(egui::Color32::from_rgb(200, 200, 210)))
                                         .fill(egui::Color32::TRANSPARENT)
                                         .stroke(egui::Stroke::NONE)
                                         .rounding(egui::Rounding::same(6.0))
@@ -548,7 +555,7 @@ impl OutputApp {
                                 // Settings button with hover effect
                                 let settings_btn = ui.add_sized(
                                     [36.0, 36.0],
-                                    egui::Button::new(egui::RichText::new("⚙").size(16.0).color(egui::Color32::from_rgb(200, 200, 210)))
+                                    egui::Button::new(egui::RichText::new(egui_phosphor::regular::GEAR).size(16.0).color(egui::Color32::from_rgb(200, 200, 210)))
                                         .fill(egui::Color32::TRANSPARENT)
                                         .stroke(egui::Stroke::NONE)
                                         .rounding(egui::Rounding::same(6.0))
@@ -592,7 +599,7 @@ impl OutputApp {
                                 // Copy button with hover effect
                                 let copy_btn = ui.add_sized(
                                     [36.0, 36.0],
-                                    egui::Button::new(egui::RichText::new("📋").size(16.0))
+                                    egui::Button::new(egui::RichText::new(egui_phosphor::regular::CLIPBOARD_TEXT).size(16.0))
                                         .fill(egui::Color32::TRANSPARENT)
                                         .stroke(egui::Stroke::NONE)
                                         .rounding(egui::Rounding::same(6.0))
@@ -705,9 +712,9 @@ impl OutputApp {
                             
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.add_space(8.0);
-                                let close_btn = ui.add_sized(
+                                 let close_btn = ui.add_sized(
                                     [36.0, 36.0],
-                                    egui::Button::new(egui::RichText::new("✕").size(16.0))
+                                    egui::Button::new(egui::RichText::new(egui_phosphor::regular::X).size(16.0))
                                         .fill(egui::Color32::TRANSPARENT)
                                         .stroke(egui::Stroke::NONE)
                                 );

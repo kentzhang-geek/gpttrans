@@ -32,3 +32,4 @@ eframe = { version = "0.27", default-features = true, features = ["wgpu"] }
 egui = "0.27"
 crossbeam-channel = "0.5"
 futures-util = "0.3"
+egui-phosphor = "0.5"
