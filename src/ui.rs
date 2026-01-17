@@ -119,7 +119,7 @@ fn ensure_output_thread() {
 
     thread::spawn(move || {
         logger::log("Output UI thread: starting");
-        let app = OutputApp { 
+        let mut app = OutputApp { 
             text: String::new(), 
             rx, 
             need_focus: false, 
@@ -137,6 +137,9 @@ fn ensure_output_thread() {
             ollama_models_loading: false,
             ollama_models_error: None,
         };
+        // Initialize with current config
+        app.sync_from_config();
+        
         let native_options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_title("Echo - Translation")
@@ -318,39 +321,7 @@ impl eframe::App for OutputApp {
                     self.need_focus = true;
                     logger::log("UI: OpenSettings message received, will show window");
                     // Load current config
-                    if let Ok(cfg_guard) = CONFIG.lock() {
-                        if let Some(cfg_arc) = cfg_guard.as_ref() {
-                            if let Ok(cfg) = cfg_arc.lock() {
-                                self.settings_api_key = cfg.openai_api_key.clone();
-                                self.settings_model = cfg.openai_model.clone();
-                                self.settings_lang = cfg.target_lang.clone();
-                                self.settings_hotkey = cfg.hotkey.clone();
-                                self.settings_api_type = cfg.api_type.clone();
-                                self.settings_api_base = cfg.api_base.clone();
-                                
-                                // Set dropdown selections based on config
-                                self.selected_api_type = match cfg.api_type.as_str() {
-                                    "openai" => 0,
-                                    "ollama" => 1,
-                                    "google_free" => 2,
-                                    _ => 0,
-                                };
-                                
-                                // Load Ollama models if API type is Ollama
-                                if self.selected_api_type == 1 {
-                                    self.load_ollama_models();
-                                }
-                                
-                                // Set model selection based on config
-                                if self.selected_api_type == 0 {
-                                    self.selected_model = 0; // OpenAI always has one model
-                                } else {
-                                    // For Ollama, we'll set the model index after models are loaded
-                                    self.selected_model = 0; // Default to first model
-                                }
-                            }
-                        }
-                    }
+                    self.sync_from_config();
                 }
                 UiMessage::OllamaModelsLoaded(models) => {
                     self.ollama_models = models;
@@ -425,6 +396,96 @@ impl eframe::App for OutputApp {
 }
 
 impl OutputApp {
+    fn sync_from_config(&mut self) {
+        if let Ok(cfg_guard) = CONFIG.lock() {
+            if let Some(cfg_arc) = cfg_guard.as_ref() {
+                if let Ok(cfg) = cfg_arc.lock() {
+                    self.settings_api_key = cfg.openai_api_key.clone();
+                    self.settings_model = cfg.openai_model.clone();
+                    self.settings_lang = cfg.target_lang.clone();
+                    self.settings_hotkey = cfg.hotkey.clone();
+                    self.settings_api_type = cfg.api_type.clone();
+                    self.settings_api_base = cfg.api_base.clone();
+                    
+                    self.selected_api_type = match cfg.api_type.as_str() {
+                        "openai" => 0,
+                        "ollama" => 1,
+                        "google_free" => 2,
+                        _ => 0,
+                    };
+                    
+                    // Load Ollama models if API type is Ollama
+                    if self.selected_api_type == 1 {
+                        self.load_ollama_models();
+                    }
+                    
+                    // Set model selection based on config
+                    if self.selected_api_type == 0 {
+                        self.selected_model = 0; // OpenAI always has one model
+                    } else if self.selected_api_type == 1 {
+                        // For Ollama, try to match the current model string to an index
+                        if !self.ollama_models.is_empty() {
+                            if let Some(index) = self.ollama_models.iter().position(|m| m.name == cfg.openai_model) {
+                                self.selected_model = index;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn save_to_config(&mut self) {
+        if let Ok(cfg_guard) = CONFIG.lock() {
+            if let Some(cfg_arc) = cfg_guard.as_ref() {
+                if let Ok(mut cfg) = cfg_arc.lock() {
+                    let new_api_type = match self.selected_api_type {
+                        0 => "openai",
+                        1 => "ollama",
+                        2 => "google_free",
+                        _ => "openai",
+                    };
+                    
+                    cfg.api_type = new_api_type.to_string();
+                    self.settings_api_type = cfg.api_type.clone();
+                    
+                    // Auto-configure base URL and Model
+                    if self.selected_api_type == 1 { // Ollama
+                        if cfg.api_base.is_empty() || cfg.api_base == "https://api.openai.com/v1" {
+                             cfg.api_base = "http://localhost:11434".to_string();
+                             self.settings_api_base = cfg.api_base.clone();
+                        }
+                        // If current model is OpenAI default, switch to a default Ollama model
+                        // We can't rely on loaded models yet as they might be loading async
+                        if cfg.openai_model == "gpt-4o-mini" {
+                            cfg.openai_model = "gemma3:1b".to_string();
+                            self.settings_model = cfg.openai_model.clone();
+                        } else {
+                            // If we have a selected model index and it's valid, use it
+                            if !self.ollama_models.is_empty() && self.selected_model < self.ollama_models.len() {
+                                cfg.openai_model = self.ollama_models[self.selected_model].name.clone();
+                                self.settings_model = cfg.openai_model.clone();
+                            }
+                        }
+                    } else if self.selected_api_type == 0 { // OpenAI
+                        if cfg.api_base.is_empty() || cfg.api_base == "http://localhost:11434" {
+                             cfg.api_base = "https://api.openai.com/v1".to_string();
+                             self.settings_api_base = cfg.api_base.clone();
+                        }
+                        // Always ensure OpenAI model is valid
+                        cfg.openai_model = "gpt-4o-mini".to_string();
+                        self.settings_model = cfg.openai_model.clone();
+                    }
+
+                    match cfg.save() {
+                        Ok(_) => logger::log("Settings saved from title bar"),
+                        Err(e) => logger::log(&format!("Failed to save settings: {}", e)),
+                    }
+                }
+            }
+        }
+    }
+
     fn load_ollama_models(&mut self) {
         if self.ollama_models_loading {
             return; // Already loading
@@ -521,17 +582,17 @@ impl OutputApp {
                     ui.allocate_ui_at_rect(title_bar_rect, |ui| {
                         ui.horizontal(|ui| {
                             ui.add_space(16.0);
-                            ui.vertical_centered(|ui| {
-                                ui.add_space(8.0);
-                                ui.label(egui::RichText::new("📝 Echo")
-                                    .size(18.0)
-                                    .color(egui::Color32::from_rgb(138, 180, 248)));
-                            });
                             
+                            // Left-aligned Title
+                            ui.label(egui::RichText::new("📝 Echo")
+                                .size(18.0)
+                                .color(egui::Color32::from_rgb(138, 180, 248)));
+                            
+                            // Right-aligned controls
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.add_space(8.0);
                                 
-                                // Close button with hover effect
+                                // Close button
                                 let close_btn_size = egui::vec2(36.0, 36.0);
                                 let (close_rect, close_resp) = ui.allocate_at_least(close_btn_size, egui::Sense::click());
                                 if close_resp.hovered() {
@@ -555,7 +616,7 @@ impl OutputApp {
                                     logger::log("Output window: hidden by user (moved off-screen)");
                                 }
                                 
-                                // Settings button with hover effect
+                                // Settings button
                                 let settings_btn_size = egui::vec2(36.0, 36.0);
                                 let (settings_rect, settings_resp) = ui.allocate_at_least(settings_btn_size, egui::Sense::click());
                                 if settings_resp.hovered() {
@@ -574,37 +635,10 @@ impl OutputApp {
                                 );
                                 if settings_resp.clicked() {
                                     self.show_settings = true;
-                                    if let Ok(cfg_guard) = CONFIG.lock() {
-                                        if let Some(cfg_arc) = cfg_guard.as_ref() {
-                                            if let Ok(cfg) = cfg_arc.lock() {
-                                                self.settings_api_key = cfg.openai_api_key.clone();
-                                                self.settings_model = cfg.openai_model.clone();
-                                                self.settings_lang = cfg.target_lang.clone();
-                                                self.settings_hotkey = cfg.hotkey.clone();
-                                                self.settings_api_type = cfg.api_type.clone();
-                                                self.settings_api_base = cfg.api_base.clone();
-                                                
-                                                // Set dropdown selections based on config
-                                                self.selected_api_type = match cfg.api_type.as_str() {
-                                                    "openai" => 0,
-                                                    "ollama" => 1,
-                                                    "google_free" => 2,
-                                                    _ => 0,
-                                                };
-                                                self.selected_model = match (cfg.api_type.as_str(), cfg.openai_model.as_str()) {
-                                                    ("openai", "gpt-4o-mini") => 0,
-                                                    ("ollama", "gemma3:1b") => 0,
-                                                    ("ollama", "gemma3:1b") => 0,
-                                                    ("ollama", "gemma3:270m") => 1,
-                                                    ("google_free", _) => 0,
-                                                    _ => 0,
-                                                };
-                                            }
-                                        }
-                                    }
+                                    self.sync_from_config();
                                 }
                                 
-                                // Copy button with hover effect
+                                // Copy button
                                 let copy_btn_size = egui::vec2(36.0, 36.0);
                                 let (copy_rect, copy_resp) = ui.allocate_at_least(copy_btn_size, egui::Sense::click());
                                 if copy_resp.hovered() {
@@ -619,15 +653,43 @@ impl OutputApp {
                                     egui::Align2::CENTER_CENTER,
                                     egui_phosphor::regular::CLIPBOARD_TEXT,
                                     egui::FontId::proportional(16.0),
-                                    if copy_resp.hovered() { egui::Color32::WHITE } else { egui::Color32::from_rgb(200, 200, 210) }, // Use default color for icon locally if needed
+                                    if copy_resp.hovered() { egui::Color32::WHITE } else { egui::Color32::from_rgb(200, 200, 210) },
                                 );
                                 if copy_resp.clicked() {
-                        let _ = write_clipboard_string(&self.text);
+                                    let _ = write_clipboard_string(&self.text);
                                     logger::log("Text copied to clipboard");
-                    }
-                });
-            });
-        });
+                                }
+
+                                ui.add_space(8.0);
+                                ui.separator();
+                                ui.add_space(8.0);
+
+                                // API Switcher Combo Box
+                                let combo_width = 110.0;
+                                egui::ComboBox::from_id_source("title_api_switcher")
+                                    .width(combo_width)
+                                    .selected_text(match self.selected_api_type {
+                                        0 => "OpenAI",
+                                        1 => "Ollama",
+                                        2 => "Google",
+                                        _ => "OpenAI"
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        let mut changed = false;
+                                        if ui.selectable_value(&mut self.selected_api_type, 0, "OpenAI").clicked() { changed = true; }
+                                        if ui.selectable_value(&mut self.selected_api_type, 1, "Ollama").clicked() { changed = true; }
+                                        if ui.selectable_value(&mut self.selected_api_type, 2, "Google").clicked() { changed = true; }
+                                        
+                                        if changed {
+                                            if self.selected_api_type == 1 {
+                                                self.load_ollama_models();
+                                            }
+                                            self.save_to_config();
+                                        }
+                                    });
+                            });
+                        });
+                    });
 
                     ui.add_space(8.0);
                     
