@@ -332,6 +332,7 @@ impl eframe::App for OutputApp {
                                 self.selected_api_type = match cfg.api_type.as_str() {
                                     "openai" => 0,
                                     "ollama" => 1,
+                                    "google_free" => 2,
                                     _ => 0,
                                 };
                                 
@@ -587,12 +588,15 @@ impl OutputApp {
                                                 self.selected_api_type = match cfg.api_type.as_str() {
                                                     "openai" => 0,
                                                     "ollama" => 1,
+                                                    "google_free" => 2,
                                                     _ => 0,
                                                 };
                                                 self.selected_model = match (cfg.api_type.as_str(), cfg.openai_model.as_str()) {
                                                     ("openai", "gpt-4o-mini") => 0,
                                                     ("ollama", "gemma3:1b") => 0,
+                                                    ("ollama", "gemma3:1b") => 0,
                                                     ("ollama", "gemma3:270m") => 1,
+                                                    ("google_free", _) => 0,
                                                     _ => 0,
                                                 };
                                             }
@@ -742,38 +746,38 @@ impl OutputApp {
                                 .show(ui, |ui| {
                             ui.add_space(8.0);
                             
-                            // API Key
-                            ui.label(egui::RichText::new("OpenAI API Key")
-                                .size(14.0)
-                                .color(egui::Color32::from_rgb(180, 190, 210)));
-                            ui.add_space(4.0);
-                            ui.add(egui::TextEdit::singleline(&mut self.settings_api_key)
-                                .password(true)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("sk-..."));
-                            
-                            ui.add_space(16.0);
-                            
                             // API Type dropdown
                             ui.label(egui::RichText::new("API Type")
                                 .size(14.0)
                                 .color(egui::Color32::from_rgb(180, 190, 210)));
                             ui.add_space(4.0);
                             egui::ComboBox::from_id_source("api_type")
-                                .selected_text(if self.selected_api_type == 0 { "OpenAI" } else { "Ollama (Free)" })
+                                .selected_text(match self.selected_api_type {
+                                    0 => "OpenAI",
+                                    1 => "Ollama (Free)",
+                                    2 => "Google (Free)",
+                                    _ => "OpenAI"
+                                })
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut self.selected_api_type, 0, "OpenAI");
                                     ui.selectable_value(&mut self.selected_api_type, 1, "Ollama (Free)");
+                                    ui.selectable_value(&mut self.selected_api_type, 2, "Google (Free)");
                                 });
                             
                             // Update API type and base URL when selection changes
-                            let new_api_type = if self.selected_api_type == 0 { "openai" } else { "ollama" };
+                            let new_api_type = match self.selected_api_type {
+                                0 => "openai",
+                                1 => "ollama",
+                                2 => "google_free",
+                                _ => "openai",
+                            };
+
                             if self.settings_api_type != new_api_type {
                                 self.settings_api_type = new_api_type.to_string();
-                                self.settings_api_base = if self.selected_api_type == 0 {
-                                    "https://api.openai.com/v1".to_string()
-                                } else {
-                                    "http://localhost:11434".to_string()
+                                self.settings_api_base = match self.selected_api_type {
+                                    0 => "https://api.openai.com/v1".to_string(),
+                                    1 => "http://localhost:11434".to_string(),
+                                    _ => String::new(), // Not used for google_free
                                 };
                                 // Reset model selection when API type changes
                                 self.selected_model = 0;
@@ -785,19 +789,39 @@ impl OutputApp {
                             }
                             
                             ui.add_space(16.0);
-                            
-                            // Model dropdown
-                            ui.label(egui::RichText::new("Model")
-                                .size(14.0)
-                                .color(egui::Color32::from_rgb(180, 190, 210)));
-                            ui.add_space(4.0);
-                            
-                            if self.selected_api_type == 0 {
-                                // OpenAI models (static)
-                                egui::ComboBox::from_id_source("model")
-                                    .selected_text("GPT-4o Mini")
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(&mut self.selected_model, 0, "GPT-4o Mini");
+
+                            if self.selected_api_type == 2 {
+                                // Google Free - No extra settings needed
+                                ui.label(egui::RichText::new("ℹ No API key required for Google Translate")
+                                    .size(13.0)
+                                    .color(egui::Color32::from_rgb(138, 180, 248)));
+                            } else {
+                                // API Key (Only for OpenAI)
+                                if self.selected_api_type == 0 {
+                                    ui.label(egui::RichText::new("OpenAI API Key")
+                                        .size(14.0)
+                                        .color(egui::Color32::from_rgb(180, 190, 210)));
+                                    ui.add_space(4.0);
+                                    ui.add(egui::TextEdit::singleline(&mut self.settings_api_key)
+                                        .password(true)
+                                        .desired_width(f32::INFINITY)
+                                        .hint_text("sk-..."));
+                                    
+                                    ui.add_space(16.0);
+                                }
+                                
+                                // Model dropdown
+                                ui.label(egui::RichText::new("Model")
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(180, 190, 210)));
+                                ui.add_space(4.0);
+                                
+                                if self.selected_api_type == 0 {
+                                    // OpenAI models (static)
+                                    egui::ComboBox::from_id_source("model")
+                                        .selected_text("GPT-4o Mini")
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.selected_model, 0, "GPT-4o Mini");
                                     });
                             } else {
                                 // Ollama models (dynamic)
@@ -831,6 +855,8 @@ impl OutputApp {
                                             }
                                         });
                                 }
+                            }
+                            
                             }
                             
                             // Update model when selection changes

@@ -365,6 +365,83 @@ pub(crate) fn write_clipboard_string(s: &str) -> bool {
     }
 }
 
+fn map_lang_to_code(lang: &str) -> &str {
+    match lang.to_lowercase().as_str() {
+        "chinese" | "zh" | "cn" | "zh-cn" => "zh-CN",
+        "english" | "en" | "us" | "uk" => "en",
+        "japanese" | "ja" | "jp" => "ja",
+        "korean" | "ko" | "kr" => "ko",
+        "french" | "fr" => "fr",
+        "spanish" | "es" => "es",
+        "german" | "de" => "de",
+        "russian" | "ru" => "ru",
+        "italian" | "it" => "it",
+        "portuguese" | "pt" => "pt",
+        "dutch" | "nl" => "nl",
+        "polish" | "pl" => "pl",
+        _ => "en", // Default to English if unknown
+    }
+}
+
+async fn translate_via_google_free<F>(
+    input: &str,
+    target_lang: &str,
+    mut on_chunk: F
+) -> anyhow::Result<String>
+where
+    F: FnMut(String),
+{
+    let target_code = map_lang_to_code(target_lang);
+    
+    // Google Translate Free API (gtx)
+    // url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={}&dt=t&q={}"
+    
+    let url = "https://translate.googleapis.com/translate_a/single";
+    let params = [
+        ("client", "gtx"),
+        ("sl", "auto"),
+        ("tl", target_code),
+        ("dt", "t"),
+        ("q", input),
+    ];
+    
+    let resp = CLIENT.get(url)
+        .query(&params)
+        .send()
+        .await?;
+        
+    if !resp.status().is_success() {
+        anyhow::bail!("Google API error: {}", resp.status());
+    }
+    
+    // The response is a nested JSON array. 
+    // [[["Translation", "Original", null, null, 1]], null, "en", ...]
+    // We need to iterate over the first array and join the first element of each inner array.
+    
+    let json: serde_json::Value = resp.json().await?;
+    
+    let mut full_text = String::new();
+    
+    if let Some(sentences) = json.as_array().and_then(|arr| arr.get(0)).and_then(|v| v.as_array()) {
+        for sentence in sentences {
+            if let Some(text) = sentence.as_array().and_then(|arr| arr.get(0)).and_then(|v| v.as_str()) {
+                full_text.push_str(text);
+            }
+        }
+    } else {
+        anyhow::bail!("Failed to parse Google Translate response");
+    }
+    
+    if full_text.is_empty() {
+        anyhow::bail!("Empty translation received");
+    }
+    
+    // Simulate streaming by just sending the whole text at once
+    on_chunk(full_text.clone());
+    
+    Ok(full_text)
+}
+
 async fn translate_via_openai_stream<F>(
     input: &str, 
     image_data: Option<ImageData>,
@@ -709,8 +786,8 @@ fn main() {
                     (c.openai_api_key, c.openai_model, c.target_lang, c.api_base, c.api_type)
                 };
                 
-                // Check if API key is required (not needed for Ollama)
-                if api_type != "ollama" && api_key.is_empty() {
+                // Check if API key is required (not needed for Ollama or Google Free)
+                if api_type != "ollama" && api_type != "google_free" && api_key.is_empty() {
                     toast("Echo", "Missing API key. Configure in settings.");
                     logger::log("Hotkey: Missing API key");
                 } else {
@@ -739,10 +816,23 @@ fn main() {
                             // Clear text and start fresh
                             ui::show_output_text(String::new());
                             
-                            translate_via_openai_stream(&input_text, image, &target_lang, &api_key, &model, &api_base, &api_type, |chunk| {
-                                // Stream each chunk to the UI as it arrives
-                                ui::append_text(chunk);
-                            }).await
+                            if api_type == "google_free" {
+                                if has_image {
+                                    // Google Free doesn't support images
+                                    let msg = "Google Translate (Free) does not support image translation.".to_string();
+                                    ui::append_text(msg.clone());
+                                    Ok(msg)
+                                } else {
+                                    translate_via_google_free(&input_text, &target_lang, |chunk| {
+                                        ui::append_text(chunk);
+                                    }).await
+                                }
+                            } else {
+                                translate_via_openai_stream(&input_text, image, &target_lang, &api_key, &model, &api_base, &api_type, |chunk| {
+                                    // Stream each chunk to the UI as it arrives
+                                    ui::append_text(chunk);
+                                }).await
+                            }
                         });
                         
                         match res {
