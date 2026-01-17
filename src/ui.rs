@@ -139,14 +139,14 @@ fn ensure_output_thread() {
         };
         let native_options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_title("GPTTrans - Translation")
+                .with_title("Echo - Translation")
                 .with_inner_size([800.0, 560.0])
                 .with_always_on_top()
                 .with_visible(false),
             ..Default::default()
         };
         match eframe::run_native(
-            "GPTTrans - Translation",
+            "Echo - Translation",
             native_options,
             Box::new(|_cc| Box::new(app)),
         ) {
@@ -522,7 +522,7 @@ impl OutputApp {
                             ui.add_space(16.0);
                             ui.vertical_centered(|ui| {
                                 ui.add_space(8.0);
-                                ui.label(egui::RichText::new("📝 GPTTrans")
+                                ui.label(egui::RichText::new("📝 Echo")
                                     .size(18.0)
                                     .color(egui::Color32::from_rgb(138, 180, 248)));
                             });

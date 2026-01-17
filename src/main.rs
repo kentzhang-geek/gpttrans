@@ -23,7 +23,7 @@ mod win_hotkey {
             let mods = km::HOT_KEY_MODIFIERS(modifiers);
             if km::RegisterHotKey(HWND(std::ptr::null_mut()), HOTKEY_ID, mods, vk_code).is_err() {
                 crate::logger::log(&format!("RegisterHotKey {} FAILED (in use?)", hotkey_str));
-                crate::toast("GPTTrans", &format!("Failed to register {} hotkey (in use?)", hotkey_str));
+                crate::toast("Echo", &format!("Failed to register {} hotkey (in use?)", hotkey_str));
             } else {
                 crate::logger::log(&format!("RegisterHotKey {} OK", hotkey_str));
             }
@@ -105,7 +105,7 @@ mod tray {
             let icon = Icon::from_rgba(rgba, icon_w as u32, icon_h as u32)?;
 
             let tray = TrayIconBuilder::new()
-                .with_tooltip("GPTTrans")
+                .with_tooltip("Echo")
                 .with_menu(Box::new(menu))
                 .with_icon(icon)
                 .build()?;
@@ -555,7 +555,7 @@ where
 fn toast(title: &str, body: &str) {
     #[cfg(windows)]
     {
-        let _ = winrt_notification::Toast::new("GPTTrans")
+        let _ = winrt_notification::Toast::new("Echo")
                 .title(title)
                 .text1(body)
                 .show();
@@ -649,7 +649,7 @@ fn main() {
                     }
                 }
                 Err(e) => {
-                    toast("GPTTrans", &format!("Tray failed: {}", e));
+                    toast("Echo", &format!("Tray failed: {}", e));
                     logger::log(&format!("Tray failed: {}", e));
                 }
             }
@@ -663,9 +663,9 @@ fn main() {
 
     let hotkey_display = cfg.lock().unwrap().hotkey.clone();
     if cfg.lock().unwrap().openai_api_key.is_empty() {
-        toast("GPTTrans", "Set OPENAI_API_KEY environment variable.");
+        toast("Echo", "Set OPENAI_API_KEY environment variable.");
     } else {
-        toast("GPTTrans", &format!("Ready. Press {} to translate.", hotkey_display));
+        toast("Echo", &format!("Ready. Press {} to translate.", hotkey_display));
     }
 
     // Pass config to UI module
@@ -711,7 +711,7 @@ fn main() {
                 
                 // Check if API key is required (not needed for Ollama)
                 if api_type != "ollama" && api_key.is_empty() {
-                    toast("GPTTrans", "Missing API key. Configure in settings.");
+                    toast("Echo", "Missing API key. Configure in settings.");
                     logger::log("Hotkey: Missing API key");
                 } else {
                     // Small delay to let the source application release the clipboard
@@ -722,12 +722,12 @@ fn main() {
                     let text = read_clipboard_string();
                     
                     if image.is_none() && text.as_ref().map_or(true, |s| s.trim().is_empty()) {
-                        toast("GPTTrans", "Clipboard is empty.");
+                        toast("Echo", "Clipboard is empty.");
                         logger::log("Hotkey: Clipboard empty");
                     } else {
                         // Show window immediately with loading indicator
                         ui::set_translating(true);
-                        toast("GPTTrans", "Translating...");
+                        toast("Echo", "Translating...");
                         
                         let input_text = text.unwrap_or_default();
                         let has_image = image.is_some();
@@ -750,16 +750,16 @@ fn main() {
                                 ui::set_translating(false);
                                 let ok = write_clipboard_string(&out);
                                 if ok {
-                                    toast("GPTTrans", "Copied to clipboard!");
+                                    toast("Echo", "Copied to clipboard!");
                                     logger::log("Translation success; copied to clipboard");
                                 } else {
-                                    toast("GPTTrans", "Translated (copy failed)");
+                                    toast("Echo", "Translated (copy failed)");
                                     logger::log("Translation success; failed to write clipboard");
                                 }
                             }
                             Err(e) => {
                                 ui::set_translating(false);
-                                toast("GPTTrans", &format!("Error: {}", e));
+                                toast("Echo", &format!("Error: {}", e));
                                 logger::log(&format!("Translation error: {}", e));
                                 ui::show_output_text(format!("❌ Error: {}", e));
                             }

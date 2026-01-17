@@ -1,9 +1,21 @@
-# GPTTrans
+# Echo
 
-A lightweight Windows tray app in Rust that translates clipboard text via AI when you press a hotkey (default: `Alt+F3`). It writes the translation back to the clipboard, shows a modern frameless output window, and displays Windows toast notifications. Runs from the system tray with no console or taskbar icon when idle.
+**Echo** is a lightweight Windows tray application that allows you to translate text (and images!) instantly using OpenAI's GPT models or local Ollama models.
 
-## 🎯 Purpose
-- Instant clipboard translation with a global hotkey
+1. **Copy** text or an image to your clipboard.
+2. Press **Alt+F3**.
+3. A window appears with the translation.
+
+![Echo Screenshot](screenshot.png)
+
+## Features
+
+- **Clipboard-based**: seamless workflow.
+- **Vision Support**: Translates text inside images (screenshots, etc.).
+- **Streaming**: Text appears instantly as it is generated.
+- **Local AI**: Support for Ollama models (e.g. gemma2, llava).
+- **Customizable**: Change hotkeys, target language, and models.
+- **Modern UI**: Built with Rust and egui.pboard translation with a global hotkey
 - **100% FREE option** with local AI (Ollama) - no API costs!
 - Minimal friction: tray-only background app, no console
 - Privacy-focused: use local models or OpenAI

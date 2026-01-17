@@ -1174,6 +1174,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
+name = "echo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clipboard-win",
+ "crossbeam-channel",
+ "eframe",
+ "egui",
+ "egui-phosphor",
+ "futures-util",
+ "image 0.25.9",
+ "once_cell",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tray-icon",
+ "windows 0.58.0",
+ "winrt-notification",
+]
+
+[[package]]
 name = "ecolor"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1965,29 +1988,6 @@ dependencies = [
  "glib-sys",
  "libc",
  "system-deps",
-]
-
-[[package]]
-name = "gpttrans"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "clipboard-win",
- "crossbeam-channel",
- "eframe",
- "egui",
- "egui-phosphor",
- "futures-util",
- "image 0.25.9",
- "once_cell",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tray-icon",
- "windows 0.58.0",
- "winrt-notification",
 ]
 
 [[package]]
