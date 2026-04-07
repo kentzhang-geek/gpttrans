@@ -570,62 +570,81 @@ where
 
     let mut stream = resp.bytes_stream();
     let mut full_text = String::new();
-    let mut buffer = Vec::new();
+    // Keep raw bytes so we never corrupt multi-byte UTF-8 characters (e.g.
+    // Chinese) that happen to be split across two HTTP chunks. Only convert
+    // to String once we have a complete UTF-8 sequence up to the last '\n'.
+    let mut raw_buffer: Vec<u8> = Vec::new();
+    let mut done = false;
 
-    while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result?;
-        buffer.extend_from_slice(&chunk);
-        
-        // Convert buffer to string and process
-        let buffer_str = String::from_utf8_lossy(&buffer);
-        let mut remaining = String::new();
-        
+    while !done {
+        match stream.next().await {
+            Some(chunk_result) => raw_buffer.extend_from_slice(&chunk_result?),
+            None => {
+                // Stream ended: flush whatever is still in the buffer (handles
+                // servers that omit the trailing '\n' on the last chunk).
+                done = true;
+                if !raw_buffer.is_empty() {
+                    raw_buffer.push(b'\n');
+                }
+            }
+        }
+
+        // Only process complete lines (up to the last '\n').  Anything after
+        // the last '\n' is a partial line — leave it in the buffer so the next
+        // chunk can complete it.  This is the core fix for missing words when
+        // an HTTP chunk boundary falls in the middle of a "data: {...}" line.
+        let last_newline = raw_buffer.iter().rposition(|&b| b == b'\n');
+        let process_up_to = last_newline.map(|p| p + 1).unwrap_or(0);
+        if process_up_to == 0 {
+            continue; // No complete line yet
+        }
+
+        // Safe UTF-8 conversion: everything up to the split point is a
+        // sequence of complete SSE lines, so it must be valid UTF-8.
+        let to_process = String::from_utf8_lossy(&raw_buffer[..process_up_to]).into_owned();
+        raw_buffer = raw_buffer[process_up_to..].to_vec();
+
         if api_type == "ollama" {
-            // Native Ollama API format - each line is a JSON object
-            for line in buffer_str.lines() {
+            // Native Ollama API: each line is a standalone JSON object.
+            for line in to_process.lines() {
                 let line = line.trim();
-                if !line.is_empty() {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(content) = parsed["response"].as_str() {
-                            full_text.push_str(content);
-                            on_chunk(content.to_string());
-                        }
+                if line.is_empty() { continue; }
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+                    if parsed["done"].as_bool() == Some(true) {
+                        done = true;
+                    }
+                    if let Some(content) = parsed["response"].as_str() {
+                        full_text.push_str(content);
+                        on_chunk(content.to_string());
                     }
                 }
             }
         } else {
-            // OpenAI-compatible API format - SSE format
-            for line in buffer_str.lines() {
+            // OpenAI-compatible SSE format.
+            'outer: for line in to_process.lines() {
                 let line = line.trim();
-                
-                if line.starts_with("data: ") {
-                    let json_str = &line[6..];
-                    if json_str == "[DONE]" {
-                        break;
+                if !line.starts_with("data: ") { continue; }
+
+                let json_str = &line[6..];
+                if json_str == "[DONE]" {
+                    done = true;
+                    break 'outer;
+                }
+
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
+                        full_text.push_str(content);
+                        on_chunk(content.to_string());
                     }
-                    
-                    // Parse the JSON chunk
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
-                        if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
-                            full_text.push_str(content);
-                            on_chunk(content.to_string());
-                        }
-                    }
-                } else if !line.is_empty() && !line.starts_with("data:") {
-                    remaining.push_str(line);
-                    remaining.push('\n');
                 }
             }
         }
-        
-        // Keep incomplete data in buffer
-        buffer = remaining.into_bytes();
     }
 
     if full_text.is_empty() {
         anyhow::bail!("Empty response from OpenAI");
     }
-    
+
     Ok(full_text)
 }
 
